@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#05060e">
+<title>Cosmo Cab</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png" type="image/png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="game" width="1280" height="720"></canvas>
+<script>
+// Xbox: receive raw Gamepad API input instead of the default mouse/UI emulation.
+if ('gamepadInputEmulation' in navigator) {
+  try { navigator.gamepadInputEmulation = 'gamepad'; } catch (e) { /* older builds */ }
+}
+// Offline support (skipped on file:// where service workers are unavailable).
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(() => { /* offline play still works from cache */ });
+  });
+}
+</script>
+<script src="js/audio.js"></script>
+<script src="js/levels.js"></script>
+<script src="js/game.js"></script>
+</body>
+</html>

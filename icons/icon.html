@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>icon source</title>
+<style>html,body{margin:0;padding:0;overflow:hidden;background:#05060e}canvas{position:fixed;inset:0;width:100vw;height:100vh}</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Renders the app icon at the current window size.
+// ?maskable=1 shrinks content into the 80% safe zone for maskable icons.
+const S = 512; // fixed internal resolution; CSS stretches to the viewport
+const maskable = location.search.includes('maskable');
+const cv = document.getElementById('c');
+cv.width = S; cv.height = S;
+const c = cv.getContext('2d');
+const TAU = Math.PI * 2;
+
+// background: deep space with a corner glow
+const bg = c.createLinearGradient(0, 0, S, S);
+bg.addColorStop(0, '#131a33');
+bg.addColorStop(1, '#05060e');
+c.fillStyle = bg;
+c.fillRect(0, 0, S, S);
+const glow = c.createRadialGradient(S * 0.78, S * 0.2, 0, S * 0.78, S * 0.2, S * 0.7);
+glow.addColorStop(0, 'rgba(120, 90, 255, 0.25)');
+glow.addColorStop(1, 'rgba(120, 90, 255, 0)');
+c.fillStyle = glow;
+c.fillRect(0, 0, S, S);
+
+// stars
+let seed = 42;
+const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+for (let i = 0; i < 40; i++) {
+  c.globalAlpha = 0.3 + rnd() * 0.7;
+  c.fillStyle = '#dfe8ff';
+  c.beginPath();
+  c.arc(rnd() * S, rnd() * S, (0.5 + rnd() * 1.6) * S / 512, 0, TAU);
+  c.fill();
+}
+c.globalAlpha = 1;
+
+function roundRect(x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.arcTo(x + w, y, x + w, y + h, r);
+  c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r);
+  c.arcTo(x, y, x + w, y, r);
+  c.closePath();
+}
+
+// the cab, scaled up from the in-game ship art
+c.save();
+c.translate(S / 2, S * 0.5);
+const k = (maskable ? 0.62 : 0.82) * S / 100;
+c.scale(k, k);
+c.rotate(-0.12);
+
+// flame
+const fl = 26;
+const fg = c.createLinearGradient(0, 14, 0, 14 + fl);
+fg.addColorStop(0, '#fff6cc'); fg.addColorStop(0.5, '#ffaa33'); fg.addColorStop(1, 'rgba(255,60,20,0)');
+c.fillStyle = fg;
+c.beginPath();
+c.moveTo(-7, 15); c.quadraticCurveTo(0, 15 + fl * 1.7, 7, 15); c.closePath();
+c.fill();
+
+// skids
+c.strokeStyle = '#9aa3b5'; c.lineWidth = 3; c.lineCap = 'round';
+c.beginPath(); c.moveTo(-10, 10); c.lineTo(-13, 19); c.stroke();
+c.beginPath(); c.moveTo(10, 10); c.lineTo(13, 19); c.stroke();
+c.lineWidth = 4;
+c.beginPath(); c.moveTo(-17, 19); c.lineTo(-9, 19); c.stroke();
+c.beginPath(); c.moveTo(9, 19); c.lineTo(17, 19); c.stroke();
+
+// body
+const bgd = c.createLinearGradient(0, -16, 0, 14);
+bgd.addColorStop(0, '#ffd94d'); bgd.addColorStop(0.6, '#ffb521'); bgd.addColorStop(1, '#e08a00');
+c.fillStyle = bgd;
+roundRect(-18, -12, 36, 26, 11); c.fill();
+c.strokeStyle = 'rgba(0,0,0,0.25)'; c.lineWidth = 1.5;
+roundRect(-18, -12, 36, 26, 11); c.stroke();
+
+// checker stripe
+c.fillStyle = '#20242f';
+for (let i = 0; i < 6; i++) if (i % 2 === 0) c.fillRect(-16 + i * 5.4, 4, 5.4, 5);
+
+// window
+const wg = c.createLinearGradient(-6, -12, 8, 0);
+wg.addColorStop(0, '#cfefff'); wg.addColorStop(1, '#5cb3e6');
+c.fillStyle = wg;
+roundRect(0, -10, 15, 12, 6); c.fill();
+c.fillStyle = 'rgba(255,255,255,0.55)';
+roundRect(3, -8, 6, 4, 2); c.fill();
+
+// roof sign
+c.fillStyle = '#20242f';
+roundRect(-9, -19, 18, 8, 3); c.fill();
+c.fillStyle = '#ffe664';
+c.font = 'bold 6px monospace';
+c.textAlign = 'center'; c.textBaseline = 'middle';
+c.fillText('TAXI', 0, -14.5);
+
+// nozzle
+c.fillStyle = '#4a5163';
+roundRect(-7, 12, 14, 5, 2); c.fill();
+c.restore();
+</script>
+</body>
+</html>

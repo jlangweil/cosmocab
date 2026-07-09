@@ -1,0 +1,23 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+  width: 100%; height: 100%;
+  background: #05060e;
+  overflow: hidden;
+}
+body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+canvas {
+  background: #05060e;
+  image-rendering: auto;
+  max-width: 100vw;
+  max-height: 100vh;
+  aspect-ratio: 16 / 9;
+  width: 100vw;
+  height: auto;
+}
+@media (min-aspect-ratio: 16/9) {
+  canvas { height: 100vh; width: auto; }
+}

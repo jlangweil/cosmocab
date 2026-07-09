@@ -1,0 +1,10 @@
+<Page
+    x:Class="CosmoCab.MainPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:muxc="using:Microsoft.UI.Xaml.Controls">
+
+    <Grid Background="#05060e">
+        <muxc:WebView2 x:Name="GameView" />
+    </Grid>
+</Page>

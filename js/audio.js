@@ -149,16 +149,64 @@ const AudioSys = (() => {
     zap() { noiseHit(0.2, 0.4, 3000, 'highpass'); blip(2000, 0.15, 'sawtooth', 0.2, 300); },
   };
 
-  // ---- voices via speech synthesis (best effort) ----
+  // ---- passenger voices ----
+  // Radio-chatter chirps: a deterministic per-phrase melody of band-passed
+  // blips. Used wherever speech synthesis is unavailable (e.g. the Xbox
+  // WebView) so passengers are never silent.
+  function chirp(text) {
+    if (!ctx) return;
+    let h = 0;
+    for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) >>> 0;
+    const n = 3 + (h % 3);
+    let t = ctx.currentTime + 0.02;
+    for (let i = 0; i < n; i++) {
+      const f = 480 + ((h >> (i * 4)) % 11) * 85;
+      const o = ctx.createOscillator();
+      o.type = i % 2 ? 'triangle' : 'square';
+      o.frequency.setValueAtTime(f, t);
+      o.frequency.exponentialRampToValueAtTime(f * (1.12 + ((h >> i) % 3) * 0.11), t + 0.07);
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = f * 1.4;
+      bp.Q.value = 2;
+      const g = ctx.createGain();
+      env(g, t, 0.008, 0.16, 0.07, 0.001);
+      o.connect(bp).connect(g).connect(sfxBus);
+      o.start(t); o.stop(t + 0.13);
+      t += 0.085 + ((h >> i) % 2) * 0.03;
+    }
+  }
+
   function say(text) {
+    // In the UWP shell (Xbox), ask the host to speak the line through
+    // Windows.Media.SpeechSynthesis — the WebView itself has no voices.
+    if (window.chrome && window.chrome.webview && window.chrome.webview.postMessage) {
+      try {
+        window.chrome.webview.postMessage(JSON.stringify({
+          t: 'say',
+          text: text,
+          vol: Math.min(1, vols.sfx * vols.master),
+          pitch: 0.8 + Math.random() * 0.7,
+          rate: 1.15,
+        }));
+        return;
+      } catch (e) { /* fall through */ }
+    }
     try {
-      if (!window.speechSynthesis) return;
-      const u = new SpeechSynthesisUtterance(text);
-      u.volume = Math.min(1, vols.sfx * vols.master);
-      u.rate = 1.15;
-      u.pitch = 0.8 + Math.random() * 0.7;
-      window.speechSynthesis.speak(u);
-    } catch (e) { /* voices unavailable */ }
+      if (window.speechSynthesis) {
+        const u = new SpeechSynthesisUtterance(text);
+        u.volume = Math.min(1, vols.sfx * vols.master);
+        u.rate = 1.15;
+        u.pitch = 0.8 + Math.random() * 0.7;
+        let started = false;
+        u.onstart = () => { started = true; };
+        window.speechSynthesis.speak(u);
+        // if speech never actually starts (no voices installed), chirp instead
+        setTimeout(() => { if (!started) chirp(text); }, 450);
+        return;
+      }
+    } catch (e) { /* fall through to chirp */ }
+    chirp(text);
   }
 
   // ---- procedural music ----
@@ -239,7 +287,17 @@ const AudioSys = (() => {
     if (ctx.state === 'suspended') ctx.resume().catch(() => {});
   }
 
-  return { init, ensureRunning, setVolumes, setEngine, sfx, say, playMusic, stopMusic, get ready() { return !!ctx; } };
+  // Tap the master bus into a MediaStream (used by the trailer recorder to
+  // capture music + sfx alongside the canvas video).
+  function captureDestination() {
+    if (!ctx) init();
+    if (!ctx || !ctx.createMediaStreamDestination) return null;
+    const dest = ctx.createMediaStreamDestination();
+    master.connect(dest);
+    return dest.stream;
+  }
+
+  return { init, ensureRunning, setVolumes, setEngine, sfx, say, playMusic, stopMusic, captureDestination, get ready() { return !!ctx; } };
 })();
 
 if (typeof module !== 'undefined') module.exports = { AudioSys };

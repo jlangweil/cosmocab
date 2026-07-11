@@ -12,6 +12,7 @@ body {
 canvas {
   background: #05060e;
   image-rendering: auto;
+  cursor: none; /* the game never uses the mouse; hide the Xbox virtual cursor */
   max-width: 100vw;
   max-height: 100vh;
   aspect-ratio: 16 / 9;

@@ -99,11 +99,39 @@ window.addEventListener('blur', () => keysDown.clear());
 // Gamepad
 const pad = {
   thrust: false, left: false, right: false, buttons: {}, pressed: {},
-  axisL: false, axisR: false, axisU: false, axisD: false, trig: false,
+  axisL: false, axisR: false, axisU: false, axisD: false,
+  fL: false, fR: false, trig: false,
 };
-function pollGamepad() {
-  pad.thrust = pad.left = pad.right = false;
-  const newPressed = {};
+
+// Native gamepad bridge: on Xbox the UWP shell reads the controller with
+// Windows.Gaming.Input and forwards it via PostWebMessageAsString — much more
+// responsive than the WebView's Gamepad API and immune to its mouse emulation.
+let nativePad = null, nativePadMs = 0;
+if (window.chrome && window.chrome.webview && window.chrome.webview.addEventListener) {
+  try {
+    window.chrome.webview.addEventListener('message', e => {
+      let d = e.data;
+      if (typeof d === 'string') { try { d = JSON.parse(d); } catch (err) { return; } }
+      if (d && d.t === 'pad') { nativePad = d; nativePadMs = performance.now(); }
+    });
+  } catch (e) { /* bridge unavailable */ }
+}
+
+// Normalized controller snapshots from whichever source is live.
+function padSnapshots() {
+  if (nativePad && performance.now() - nativePadMs < 300) {
+    const n = nativePad;
+    return [{
+      native: true,
+      ax: n.lx || 0, ay: -(n.ly || 0),
+      trig: Math.max(n.rt || 0, n.lt || 0),
+      b: {
+        a: !!n.a, back: !!n.b, horn: !!n.x, restart: !!n.y,
+        du: !!n.du, dd: !!n.dd, dl: !!n.dl, dr: !!n.dr, menu: !!n.menu,
+      },
+    }];
+  }
+  const snaps = [];
   let gps = [];
   try {
     gps = navigator.getGamepads ? navigator.getGamepads() : [];
@@ -115,27 +143,48 @@ function pollGamepad() {
     // that rest off-center would otherwise spam navigation every frame.
     if (!gp || !gp.connected || gp.mapping !== 'standard') continue;
     const btn = i => !!(gp.buttons[i] && gp.buttons[i].pressed);
-    const ax = gp.axes[0] || 0, ay = gp.axes[1] || 0;
-    // hysteresis: engage past 0.6, release below 0.35, so drift/noise can't oscillate
-    pad.axisL = pad.axisL ? ax < -0.35 : ax < -0.6;
-    pad.axisR = pad.axisR ? ax > 0.35 : ax > 0.6;
-    pad.axisU = pad.axisU ? ay < -0.35 : ay < -0.6;
-    pad.axisD = pad.axisD ? ay > 0.35 : ay > 0.6;
-    const trigV = gp.buttons[7] ? gp.buttons[7].value : 0;
-    pad.trig = pad.trig ? trigV > 0.25 : trigV > 0.45;
-    pad.left = pad.left || pad.axisL || btn(14);
-    pad.right = pad.right || pad.axisR || btn(15);
-    pad.thrust = pad.thrust || btn(0) || pad.trig;
+    snaps.push({
+      ax: gp.axes[0] || 0, ay: gp.axes[1] || 0,
+      trig: gp.buttons[7] ? gp.buttons[7].value : 0,
+      b: {
+        a: btn(0), back: btn(1), horn: btn(2), restart: btn(3),
+        du: btn(12), dd: btn(13), dl: btn(14), dr: btn(15), menu: btn(9),
+      },
+    });
+  }
+  return snaps;
+}
+
+function pollGamepad() {
+  pad.thrust = pad.left = pad.right = false;
+  const newPressed = {};
+  for (const s of padSnapshots()) {
+    // Flight rotation deadzone: the native Xbox bridge delivers clean readings,
+    // so it gets a light threshold for immediate steering. Browser Gamepad API
+    // devices keep the stiff 0.6 threshold that protects against stick drift.
+    const eng = s.native ? 0.33 : 0.6;
+    const rel = s.native ? 0.24 : 0.35;
+    pad.fL = pad.fL ? s.ax < -rel : s.ax < -eng;
+    pad.fR = pad.fR ? s.ax > rel : s.ax > eng;
+    // menu navigation latch: deliberately stiffer so stick drift can't spam menus
+    pad.axisL = pad.axisL ? s.ax < -0.35 : s.ax < -0.6;
+    pad.axisR = pad.axisR ? s.ax > 0.35 : s.ax > 0.6;
+    pad.axisU = pad.axisU ? s.ay < -0.35 : s.ay < -0.6;
+    pad.axisD = pad.axisD ? s.ay > 0.35 : s.ay > 0.6;
+    pad.trig = pad.trig ? s.trig > 0.16 : s.trig > 0.3;
+    pad.left = pad.left || pad.fL || s.b.dl;
+    pad.right = pad.right || pad.fR || s.b.dr;
+    pad.thrust = pad.thrust || s.b.a || pad.trig;
     const state = {
-      horn: btn(2),
-      pause: btn(9),
-      back: btn(1),
-      up: btn(12) || pad.axisU,
-      down: btn(13) || pad.axisD,
-      left: btn(14) || pad.axisL,
-      right: btn(15) || pad.axisR,
-      a: btn(0),
-      restart: btn(3),
+      horn: s.b.horn,
+      pause: s.b.menu,
+      back: s.b.back,
+      up: s.b.du || pad.axisU,
+      down: s.b.dd || pad.axisD,
+      left: s.b.dl || pad.axisL,
+      right: s.b.dr || pad.axisR,
+      a: s.b.a,
+      restart: s.b.restart,
     };
     for (const k in state) {
       if (state[k] && !pad.buttons[k]) newPressed[k] = true;
@@ -1056,7 +1105,8 @@ function handleGameInput() {
 const MAIN_ITEMS = ['START GAME', 'LEVEL SELECT', 'HIGH SCORES', 'SETTINGS', 'EXIT'];
 
 // Rate-limit menu navigation so no input source can spam it faster than ~7/s.
-let lastNavMs = 0;
+// Starts at -Infinity so the very first input after page load is never eaten.
+let lastNavMs = -Infinity;
 function navGate(active) {
   if (!active) return false;
   const t = performance.now();
@@ -1638,10 +1688,19 @@ function drawSettings(c, time) {
 let lastT = performance.now();
 let acc = 0;
 let lastResumeTry = 0;
+let lastFrameMs = 0;
+let rafQueued = false;
 const STEP = 1 / 120;
 
+function scheduleFrame() {
+  if (rafQueued) return;
+  rafQueued = true;
+  requestAnimationFrame(ts => { rafQueued = false; frame(ts); });
+}
+
 function frame(now) {
-  requestAnimationFrame(frame);
+  scheduleFrame();
+  lastFrameMs = performance.now();
   const rawDt = Math.min(0.1, (now - lastT) / 1000);
   lastT = now;
   const time = now / 1000;
@@ -1692,4 +1751,12 @@ AudioSys.setVolumes(save.settings);
 try { AudioSys.init(); } catch (e) { /* audio unavailable */ }
 window.addEventListener('pointerdown', () => AudioSys.init());
 
-requestAnimationFrame(frame);
+scheduleFrame();
+
+// Some hosts (the Xbox WebView before it receives focus) throttle
+// requestAnimationFrame to a standstill, leaving a blank screen until the
+// first button press. This watchdog keeps frames flowing until real vsync
+// ticks take over; the scheduleFrame guard prevents double-pumping after.
+setInterval(() => {
+  if (performance.now() - lastFrameMs > 400) frame(performance.now());
+}, 250);

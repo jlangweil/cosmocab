@@ -9,7 +9,7 @@
        Project > Publish > Associate App with the Store to fill these in. -->
   <Identity Name="JELEnterprises.CosmoCab"
             Publisher="CN=CA45131B-EF29-4355-9B3F-3E2A266DFBB0"
-            Version="1.0.3.0" />
+            Version="1.0.5.0" />
 
   <mp:PhoneIdentity PhoneProductId="69b8303c-fcac-4858-8624-517b7f202bbd" PhonePublisherId="00000000-0000-0000-0000-000000000000" />
 

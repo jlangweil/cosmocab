@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Cosmo Cab key art generator</title>
+<style>html,body{margin:0;padding:0;overflow:hidden;background:#05060e}canvas{position:fixed;inset:0;width:100vw;height:100vh}</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Renders Xbox store art at the current window size.
+//   ?title=1   include the game logo (placed within the top 3/4)
+// The composition adapts to landscape / portrait / square automatically.
+const W = innerWidth, H = innerHeight;
+const TITLED = location.search.includes('title=1');
+const cv = document.getElementById('c');
+cv.width = W; cv.height = H;
+const c = cv.getContext('2d');
+const TAU = Math.PI * 2;
+const portrait = H > W * 1.1;
+const square = Math.abs(W - H) < W * 0.1;
+
+let seed = 1337;
+const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+
+function roundRect(x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.arcTo(x + w, y, x + w, y + h, r);
+  c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r);
+  c.arcTo(x, y, x + w, y, r);
+  c.closePath();
+}
+
+/* ------------------------------- background ------------------------------- */
+const bg = c.createLinearGradient(0, 0, 0, H);
+bg.addColorStop(0, '#0b0d22');
+bg.addColorStop(0.55, '#131033');
+bg.addColorStop(1, '#2a1430');
+c.fillStyle = bg;
+c.fillRect(0, 0, W, H);
+
+// nebula wisps
+for (const [nx, ny, nr, col] of [
+  [W * 0.18, H * 0.7, W * 0.45, 'rgba(120,60,160,0.14)'],
+  [W * 0.85, H * 0.25, W * 0.4, 'rgba(50,90,200,0.12)'],
+  [W * 0.55, H * 0.5, W * 0.5, 'rgba(200,90,60,0.07)'],
+]) {
+  const g = c.createRadialGradient(nx, ny, 0, nx, ny, nr);
+  g.addColorStop(0, col);
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  c.fillStyle = g;
+  c.fillRect(0, 0, W, H);
+}
+
+// stars
+for (let i = 0; i < 480; i++) {
+  const big = rnd() > 0.96;
+  c.globalAlpha = 0.25 + rnd() * 0.75;
+  c.fillStyle = ['#dfe8ff', '#ffe9c9', '#c9d6ff'][i % 3];
+  const x = rnd() * W, y = rnd() * H, r = (0.6 + rnd() * 1.4) * (W / 1600) * (big ? 2.6 : 1);
+  if (big) { c.shadowColor = '#cfe0ff'; c.shadowBlur = 14; }
+  c.beginPath(); c.arc(x, y, r, 0, TAU); c.fill();
+  c.shadowBlur = 0;
+}
+c.globalAlpha = 1;
+
+/* --------------------------------- planet --------------------------------- */
+function planet(px, py, pr, hue) {
+  const g = c.createRadialGradient(px - pr * 0.35, py - pr * 0.35, pr * 0.1, px, py, pr);
+  g.addColorStop(0, `hsl(${hue}, 55%, 58%)`);
+  g.addColorStop(0.7, `hsl(${hue}, 55%, 32%)`);
+  g.addColorStop(1, `hsl(${hue}, 60%, 14%)`);
+  c.fillStyle = g;
+  c.beginPath(); c.arc(px, py, pr, 0, TAU); c.fill();
+  // bands
+  c.save();
+  c.beginPath(); c.arc(px, py, pr, 0, TAU); c.clip();
+  c.globalAlpha = 0.18;
+  c.fillStyle = `hsl(${hue + 20}, 60%, 70%)`;
+  for (let i = -2; i <= 2; i++) {
+    c.beginPath();
+    c.ellipse(px, py + i * pr * 0.32, pr * 1.05, pr * 0.09, -0.15, 0, TAU);
+    c.fill();
+  }
+  c.restore();
+  c.globalAlpha = 1;
+  // ring
+  c.save();
+  c.translate(px, py); c.rotate(-0.35);
+  c.strokeStyle = `hsla(${hue + 30}, 65%, 65%, 0.5)`;
+  c.lineWidth = pr * 0.09;
+  c.beginPath(); c.ellipse(0, 0, pr * 1.65, pr * 0.42, 0, 0, TAU); c.stroke();
+  c.strokeStyle = `hsla(${hue + 30}, 65%, 75%, 0.22)`;
+  c.lineWidth = pr * 0.2;
+  c.beginPath(); c.ellipse(0, 0, pr * 1.95, pr * 0.5, 0, 0, TAU); c.stroke();
+  c.restore();
+}
+if (portrait) planet(W * 0.82, H * 0.09, W * 0.16, 265);
+else if (square) planet(W * 0.83, H * 0.16, W * 0.11, 265);
+else planet(W * 0.14, H * 0.2, W * 0.075, 150);
+// small moon
+planet(portrait ? W * 0.1 : W * (square ? 0.12 : 0.88), H * (portrait ? 0.32 : 0.12), W * 0.028, 30);
+
+/* --------------------------------- skyline --------------------------------- */
+const skyTop = H * (portrait ? 0.82 : 0.78);
+function building(bx, bw, bh, shade) {
+  c.fillStyle = shade;
+  c.fillRect(bx, H - bh, bw, bh);
+  // windows
+  const cell = Math.max(8, W / 160);
+  for (let y = H - bh + cell; y < H - cell; y += cell * 1.7) {
+    for (let x = bx + cell * 0.7; x < bx + bw - cell; x += cell * 1.4) {
+      if (rnd() < 0.28) {
+        c.fillStyle = rnd() < 0.85 ? 'rgba(255,217,138,0.85)' : 'rgba(140,220,255,0.8)';
+        c.fillRect(x, y, cell * 0.55, cell * 0.8);
+      }
+    }
+  }
+}
+// back row (dimmer)
+for (let x = -W * 0.02; x < W; ) {
+  const bw = W * (0.05 + rnd() * 0.08);
+  building(x, bw, H - skyTop + H * (0.04 + rnd() * 0.13), '#0d0f1d');
+  x += bw * (0.75 + rnd() * 0.4);
+}
+// front row
+for (let x = -W * 0.02; x < W; ) {
+  const bw = W * (0.06 + rnd() * 0.09);
+  building(x, bw, H - skyTop - H * 0.02 + H * (rnd() * 0.09), '#141728');
+  x += bw * (0.85 + rnd() * 0.5);
+}
+
+/* ------------------------------- landing pad ------------------------------- */
+function pad(px, py, pw, label) {
+  const ph = pw * 0.22;
+  const g = c.createLinearGradient(px, py, px, py + ph);
+  g.addColorStop(0, '#4d5568'); g.addColorStop(1, '#2c3140');
+  c.fillStyle = g;
+  roundRect(px, py, pw, ph, pw * 0.03); c.fill();
+  c.fillStyle = '#788299';
+  c.fillRect(px + pw * 0.015, py, pw * 0.97, ph * 0.12);
+  // stripes
+  c.save();
+  c.beginPath(); c.rect(px, py + ph * 0.16, pw, ph * 0.22); c.clip();
+  const s = pw * 0.055;
+  for (let x = px - s; x < px + pw + s; x += s * 2) {
+    c.fillStyle = '#ffcf3f';
+    c.beginPath();
+    c.moveTo(x, py + ph * 0.38); c.lineTo(x + s, py + ph * 0.16);
+    c.lineTo(x + s * 2, py + ph * 0.16); c.lineTo(x + s, py + ph * 0.38);
+    c.closePath(); c.fill();
+  }
+  c.restore();
+  // beacons
+  for (const bx of [px + pw * 0.05, px + pw * 0.95]) {
+    c.fillStyle = '#7cff9a';
+    c.shadowColor = '#7cff9a'; c.shadowBlur = pw * 0.06;
+    c.beginPath(); c.arc(bx, py - ph * 0.1, pw * 0.02, 0, TAU); c.fill();
+    c.shadowBlur = 0;
+  }
+  // label
+  c.fillStyle = '#1a1e28';
+  roundRect(px + pw / 2 - pw * 0.09, py + ph * 0.42, pw * 0.18, ph * 0.5, pw * 0.02); c.fill();
+  c.fillStyle = '#7cff9a';
+  c.font = `bold ${ph * 0.38}px "Segoe UI", sans-serif`;
+  c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.fillText(label, px + pw / 2, py + ph * 0.69);
+  // waving passenger
+  const hx = px + pw * 0.18, hy = py;
+  const u = pw * 0.012;
+  c.strokeStyle = '#2b2f3d'; c.lineWidth = u * 2.4; c.lineCap = 'round';
+  c.beginPath(); c.moveTo(hx - u * 2, hy - u * 9); c.lineTo(hx - u * 3, hy); c.stroke();
+  c.beginPath(); c.moveTo(hx + u * 2, hy - u * 9); c.lineTo(hx + u * 3, hy); c.stroke();
+  c.fillStyle = '#4aa3df';
+  roundRect(hx - u * 4.5, hy - u * 18, u * 9, u * 10, u * 3); c.fill();
+  c.fillStyle = '#ffd9b3';
+  c.beginPath(); c.arc(hx, hy - u * 22, u * 4.5, 0, TAU); c.fill();
+  c.strokeStyle = '#3b83b3'; c.lineWidth = u * 2;
+  c.beginPath(); c.moveTo(hx + u * 4, hy - u * 15); c.lineTo(hx + u * 9, hy - u * 24); c.stroke();
+}
+
+/* ---------------------------------- taxi ---------------------------------- */
+function taxi(tx, ty, k, rot) {
+  c.save();
+  c.translate(tx, ty);
+  c.rotate(rot);
+  c.scale(k, k);
+
+  // engine glow + flame
+  const gg = c.createRadialGradient(0, 26, 4, 0, 26, 60);
+  gg.addColorStop(0, 'rgba(255,190,80,0.85)');
+  gg.addColorStop(1, 'rgba(255,120,40,0)');
+  c.fillStyle = gg;
+  c.beginPath(); c.arc(0, 26, 60, 0, TAU); c.fill();
+  const fl = 34;
+  const fg = c.createLinearGradient(0, 14, 0, 14 + fl * 1.8);
+  fg.addColorStop(0, '#fff6cc'); fg.addColorStop(0.45, '#ffaa33'); fg.addColorStop(1, 'rgba(255,60,20,0)');
+  c.fillStyle = fg;
+  c.beginPath();
+  c.moveTo(-7, 15); c.quadraticCurveTo(0, 15 + fl * 1.9, 7, 15); c.closePath();
+  c.fill();
+  // ember particles
+  for (let i = 0; i < 16; i++) {
+    c.globalAlpha = 0.25 + rnd() * 0.6;
+    c.fillStyle = ['#ffdd66', '#ff9944', '#ff5522'][i % 3];
+    c.beginPath();
+    c.arc((rnd() - 0.5) * 22, 26 + rnd() * 66, 1.2 + rnd() * 2.6, 0, TAU);
+    c.fill();
+  }
+  c.globalAlpha = 1;
+
+  // skids
+  c.strokeStyle = '#9aa3b5'; c.lineWidth = 3; c.lineCap = 'round';
+  c.beginPath(); c.moveTo(-10, 10); c.lineTo(-13, 19); c.stroke();
+  c.beginPath(); c.moveTo(10, 10); c.lineTo(13, 19); c.stroke();
+  c.lineWidth = 4;
+  c.beginPath(); c.moveTo(-17, 19); c.lineTo(-9, 19); c.stroke();
+  c.beginPath(); c.moveTo(9, 19); c.lineTo(17, 19); c.stroke();
+
+  // body
+  const bgrad = c.createLinearGradient(0, -16, 0, 14);
+  bgrad.addColorStop(0, '#ffd94d'); bgrad.addColorStop(0.6, '#ffb521'); bgrad.addColorStop(1, '#e08a00');
+  c.fillStyle = bgrad;
+  roundRect(-18, -12, 36, 26, 11); c.fill();
+  c.strokeStyle = 'rgba(0,0,0,0.25)'; c.lineWidth = 1.5;
+  roundRect(-18, -12, 36, 26, 11); c.stroke();
+
+  // checker stripe
+  c.fillStyle = '#20242f';
+  for (let i = 0; i < 6; i++) if (i % 2 === 0) c.fillRect(-16 + i * 5.4, 4, 5.4, 5);
+
+  // cockpit
+  const wg = c.createLinearGradient(-6, -12, 8, 0);
+  wg.addColorStop(0, '#cfefff'); wg.addColorStop(1, '#5cb3e6');
+  c.fillStyle = wg;
+  roundRect(0, -10, 15, 12, 6); c.fill();
+  c.fillStyle = 'rgba(255,255,255,0.55)';
+  roundRect(3, -8, 6, 4, 2); c.fill();
+
+  // roof sign
+  c.fillStyle = '#20242f';
+  roundRect(-9, -19, 18, 8, 3); c.fill();
+  c.fillStyle = '#ffe664';
+  c.font = 'bold 6px monospace';
+  c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.fillText('TAXI', 0, -14.5);
+
+  // nozzle
+  c.fillStyle = '#4a5163';
+  roundRect(-7, 12, 14, 5, 2); c.fill();
+  c.restore();
+}
+
+/* ----------------------------- composition ----------------------------- */
+const padW = W * (portrait ? 0.42 : square ? 0.3 : 0.19);
+if (portrait) pad(W * 0.63 - padW / 2, H * 0.905, padW, 'B');
+else if (square) pad(W * 0.62, H * 0.86, padW, 'B');
+else pad(W * 0.66, H * 0.84, padW, 'B');
+
+let taxiK, taxiX, taxiY, taxiR;
+if (portrait) { taxiK = W / 130; taxiX = W * 0.36; taxiY = H * (TITLED ? 0.48 : 0.44); taxiR = 0.16; }
+else if (square) { taxiK = W / 170; taxiX = W * 0.44; taxiY = H * 0.46; taxiR = 0.15; }
+else { taxiK = H / 130; taxiX = W * 0.42; taxiY = H * (TITLED ? 0.52 : 0.45); taxiR = 0.17; }
+
+// motion streaks behind the cab
+c.save();
+c.translate(taxiX, taxiY);
+c.rotate(taxiR);
+for (let i = 0; i < 7; i++) {
+  const yy = (rnd() - 0.5) * taxiK * 34;
+  const len = taxiK * (14 + rnd() * 26);
+  const grad = c.createLinearGradient(-taxiK * 20 - len, 0, -taxiK * 16, 0);
+  grad.addColorStop(0, 'rgba(160,190,255,0)');
+  grad.addColorStop(1, 'rgba(160,190,255,0.35)');
+  c.strokeStyle = grad;
+  c.lineWidth = taxiK * 0.7;
+  c.beginPath(); c.moveTo(-taxiK * 20 - len, yy); c.lineTo(-taxiK * 16, yy); c.stroke();
+}
+c.restore();
+
+taxi(taxiX, taxiY, taxiK, taxiR);
+
+/* ------------------------------- title logo ------------------------------- */
+if (TITLED) {
+  const ty = portrait ? H * 0.14 : H * 0.17;         // well inside the top 3/4
+  const size = portrait ? W * 0.155 : Math.min(W * 0.095, H * 0.17);
+  c.textAlign = 'center'; c.textBaseline = 'alphabetic';
+  c.font = `bold ${size}px "Segoe UI", sans-serif`;
+  // soft dark backing for legibility
+  const bgg = c.createRadialGradient(W / 2, ty, size * 0.2, W / 2, ty, W * 0.42);
+  bgg.addColorStop(0, 'rgba(5,6,14,0.55)');
+  bgg.addColorStop(1, 'rgba(5,6,14,0)');
+  c.fillStyle = bgg;
+  c.fillRect(0, ty - size * 1.4, W, size * 2.6);
+
+  const lg = c.createLinearGradient(0, ty - size, 0, ty + size * 0.2);
+  lg.addColorStop(0, '#ffe066'); lg.addColorStop(1, '#ff9922');
+  c.fillStyle = lg;
+  c.shadowColor = '#ff9922'; c.shadowBlur = size * 0.4;
+  c.fillText('COSMO CAB', W / 2, ty + size * 0.35);
+  c.shadowBlur = 0;
+  c.font = `600 ${size * 0.24}px "Segoe UI", sans-serif`;
+  c.fillStyle = '#c9d4ea';
+  c.shadowColor = '#05060e'; c.shadowBlur = 8;
+  c.fillText('P I C K  U P   ·   D E L I V E R   ·   S U R V I V E', W / 2, ty + size * 0.75);
+  c.shadowBlur = 0;
+}
+
+// gentle vignette
+const vg = c.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.45, W / 2, H / 2, Math.max(W, H) * 0.75);
+vg.addColorStop(0, 'rgba(0,0,0,0)');
+vg.addColorStop(1, 'rgba(0,0,0,0.32)');
+c.fillStyle = vg;
+c.fillRect(0, 0, W, H);
+</script>
+</body>
+</html>

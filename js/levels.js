@@ -10,11 +10,31 @@
 //   rocks: {t:'rocks', x0, x1, iv}                         falling rocks spawner
 'use strict';
 
+// Visual themes. Each level names one; the renderer pulls sky gradient, wall
+// palette, planet hue, accent color, and an optional ambient effect from here.
+//   deco: 'snow' | 'embers' | 'dust' | 'sparks' | 'spores' | 'confetti'
+const THEMES = {
+  training:  { name: 'TRAINING STATION',   bgTop: '#101528', bgBot: '#232a44', wallH: 220, wallS: 18, planetH: 210, accent: '#8ecbff', deco: null },
+  moonbase:  { name: 'MOON BASE',          bgTop: '#04050c', bgBot: '#191c2a', wallH: 225, wallS: 6,  planetH: 45,  accent: '#d8dce8', deco: null, bigPlanet: true },
+  mining:    { name: 'MINING COLONY',      bgTop: '#120d08', bgBot: '#33231a', wallH: 26,  wallS: 35, planetH: 20,  accent: '#ffb347', deco: 'dust' },
+  factory:   { name: 'ORBITAL FACTORY',    bgTop: '#0a1016', bgBot: '#1d2f38', wallH: 195, wallS: 25, planetH: 180, accent: '#66d9e8', deco: 'sparks' },
+  frozen:    { name: 'FROZEN PLANET',      bgTop: '#0a1420', bgBot: '#2a4d66', wallH: 205, wallS: 32, planetH: 195, accent: '#bfe9ff', deco: 'snow' },
+  lava:      { name: 'LAVA CORE',          bgTop: '#160705', bgBot: '#4a160a', wallH: 12,  wallS: 45, planetH: 10,  accent: '#ff6b35', deco: 'embers' },
+  jungle:    { name: 'ALIEN JUNGLE',       bgTop: '#071510', bgBot: '#17402e', wallH: 140, wallS: 30, planetH: 120, accent: '#7cff9a', deco: 'spores' },
+  ruins:     { name: 'ANCIENT RUINS',      bgTop: '#140f1e', bgBot: '#3a2c47', wallH: 35,  wallS: 24, planetH: 280, accent: '#e8c47a', deco: 'dust' },
+  deepspace: { name: 'DEEP SPACE STATION', bgTop: '#020308', bgBot: '#0b0f1e', wallH: 235, wallS: 22, planetH: 250, accent: '#7a9bff', deco: null, starBoost: true },
+  fortress:  { name: 'MILITARY FORTRESS',  bgTop: '#0c0d12', bgBot: '#26222a', wallH: 210, wallS: 8,  planetH: 0,   accent: '#ff5566', deco: null },
+  resort:    { name: 'LUXURY RESORT',      bgTop: '#1c0f2e', bgBot: '#8a3a55', wallH: 190, wallS: 35, planetH: 320, accent: '#ffd166', deco: null },
+  carnival:  { name: 'SPACE CARNIVAL',     bgTop: '#160b26', bgBot: '#3d1a54', wallH: 290, wallS: 35, planetH: 310, accent: '#ff7ad9', deco: 'confetti' },
+  megacity:  { name: 'MEGACITY',           bgTop: '#060912', bgBot: '#141d3a', wallH: 225, wallS: 28, planetH: 200, accent: '#66e0ff', deco: null },
+};
+
 const LEVELS = [
 
 // ---------- 1: FIRST FARE ----------
 {
   name: 'First Fare',
+  theme: 'training',
   fares: ['A>B', 'B>A'],
   map: [
     '',
@@ -44,7 +64,8 @@ const LEVELS = [
 // ---------- 2: ROUND TRIP ----------
 {
   name: 'Round Trip',
-  fares: ['A>B', 'B>C', 'C>A'],
+  theme: 'training',
+  fares: ['A>B', 'C>A', 'B>C'],
   map: [
     '',
     '',
@@ -73,7 +94,8 @@ const LEVELS = [
 // ---------- 3: THE LEDGE ----------
 {
   name: 'The Ledge',
-  fares: ['A>B', 'B>C', 'C>A'],
+  theme: 'training',
+  fares: ['A>C', 'B>A', 'C>B'],
   map: [
     '',
     '',
@@ -102,7 +124,8 @@ const LEVELS = [
 // ---------- 4: REFUEL RUN ----------
 {
   name: 'Refuel Run',
-  fares: ['A>C', 'C>B', 'B>A'],
+  theme: 'moonbase',
+  fares: ['A>B', 'C>B', 'A>C'],
   map: [
     '',
     '',
@@ -131,7 +154,8 @@ const LEVELS = [
 // ---------- 5: THE SHAFT ----------
 {
   name: 'The Shaft',
-  fares: ['A>B', 'B>C', 'C>A'],
+  theme: 'mining',
+  fares: ['A>C', 'B>C', 'A>B'],
   map: [
     '',
     '',
@@ -160,7 +184,8 @@ const LEVELS = [
 // ---------- 6: BASEMENT ----------
 {
   name: 'Basement',
-  fares: ['A>B', 'B>C', 'C>A'],
+  theme: 'mining',
+  fares: ['A>B', 'C>A', 'B>C'],
   map: [
     '',
     '',
@@ -189,7 +214,8 @@ const LEVELS = [
 // ---------- 7: RED LIGHT ----------
 {
   name: 'Red Light',
-  fares: ['A>B', 'B>C', 'C>A'],
+  theme: 'fortress',
+  fares: ['A>C', 'B>A', 'C>B'],
   map: [
     '',
     '',
@@ -220,7 +246,8 @@ const LEVELS = [
 // ---------- 8: CROSSFIRE ----------
 {
   name: 'Crossfire',
-  fares: ['A>B', 'B>C', 'C>A'],
+  theme: 'fortress',
+  fares: ['A>B', 'C>B', 'A>C'],
   map: [
     '',
     '',
@@ -252,7 +279,8 @@ const LEVELS = [
 // ---------- 9: LASER STACK ----------
 {
   name: 'Laser Stack',
-  fares: ['A>C', 'C>B', 'B>A'],
+  theme: 'fortress',
+  fares: ['A>C', 'B>C', 'A>B'],
   map: [
     '',
     '',
@@ -284,7 +312,8 @@ const LEVELS = [
 // ---------- 10: THE GRID ----------
 {
   name: 'The Grid',
-  fares: ['A>B', 'B>D', 'D>C', 'C>A'],
+  theme: 'deepspace',
+  fares: ['A>B', 'C>D', 'B>A', 'D>C'],
   map: [
     '',
     '',
@@ -317,7 +346,8 @@ const LEVELS = [
 // ---------- 11: ELEVATOR ----------
 {
   name: 'Elevator',
-  fares: ['A>B', 'B>A', 'A>B'],
+  theme: 'factory',
+  fares: ['A>B', 'A>B', 'A>B'],
   map: [
     '',
     '',
@@ -327,7 +357,7 @@ const LEVELS = [
     '................##',
     '................##',
     '................##',
-    '................##',
+    '.......*........##',
     '................##',
     '................##',
     '................##',
@@ -348,7 +378,8 @@ const LEVELS = [
 // ---------- 12: TRAFFIC ----------
 {
   name: 'Traffic',
-  fares: ['A>B', 'B>C', 'C>A'],
+  theme: 'megacity',
+  fares: ['A>B', 'C>A', 'B>C'],
   map: [
     '',
     '',
@@ -380,7 +411,8 @@ const LEVELS = [
 // ---------- 13: PISTONS ----------
 {
   name: 'Pistons',
-  fares: ['A>B', 'B>A', 'A>B'],
+  theme: 'factory',
+  fares: ['A>B', 'A>B', 'A>B'],
   map: [
     '',
     '',
@@ -413,7 +445,8 @@ const LEVELS = [
 // ---------- 14: CONVEYOR CANYON ----------
 {
   name: 'Conveyor Canyon',
-  fares: ['A>B', 'B>C', 'C>D', 'D>A'],
+  theme: 'factory',
+  fares: ['A>C', 'B>D', 'C>A', 'D>B'],
   map: [
     '',
     '',
@@ -446,7 +479,8 @@ const LEVELS = [
 // ---------- 15: WINDMILL ----------
 {
   name: 'Windmill',
-  fares: ['A>B', 'B>C', 'C>A'],
+  theme: 'frozen',
+  fares: ['A>C', 'B>A', 'C>B'],
   map: [
     '',
     '',
@@ -477,7 +511,8 @@ const LEVELS = [
 // ---------- 16: TWIN FANS ----------
 {
   name: 'Twin Fans',
-  fares: ['A>B', 'B>C', 'C>A'],
+  theme: 'resort',
+  fares: ['A>B', 'C>B', 'A>C'],
   map: [
     '',
     '',
@@ -509,7 +544,8 @@ const LEVELS = [
 // ---------- 17: FAN CAVE ----------
 {
   name: 'Fan Cave',
-  fares: ['A>B', 'B>C', 'C>A'],
+  theme: 'jungle',
+  fares: ['A>C', 'B>C', 'A>B'],
   map: [
     '',
     '',
@@ -540,7 +576,8 @@ const LEVELS = [
 // ---------- 18: CLOCKWORK ----------
 {
   name: 'Clockwork',
-  fares: ['A>B', 'B>D', 'D>C', 'C>A'],
+  theme: 'carnival',
+  fares: ['A>D', 'B>C', 'D>A', 'C>B'],
   map: [
     '',
     '',
@@ -548,7 +585,7 @@ const LEVELS = [
     '....BBBB..................DDDD',
     '',
     '',
-    '',
+    '........*',
     '',
     '.................####',
     '',
@@ -573,7 +610,8 @@ const LEVELS = [
 // ---------- 19: ROCKFALL ----------
 {
   name: 'Rockfall',
-  fares: ['A>B', 'B>C', 'C>A'],
+  theme: 'mining',
+  fares: ['A>B', 'C>A', 'B>C'],
   map: [
     '',
     '',
@@ -604,7 +642,8 @@ const LEVELS = [
 // ---------- 20: METEOR ALLEY ----------
 {
   name: 'Meteor Alley',
-  fares: ['A>B', 'B>C', 'C>D', 'D>A'],
+  theme: 'moonbase',
+  fares: ['A>B', 'C>D', 'B>A', 'D>C'],
   map: [
     '',
     '',
@@ -635,7 +674,8 @@ const LEVELS = [
 // ---------- 21: LANDSLIDE ----------
 {
   name: 'Landslide',
-  fares: ['A>B', 'B>C', 'C>A'],
+  theme: 'ruins',
+  fares: ['A>C', 'B>A', 'C>B'],
   map: [
     '',
     '',
@@ -666,7 +706,8 @@ const LEVELS = [
 // ---------- 22: BOULDER DASH ----------
 {
   name: 'Boulder Dash',
-  fares: ['A>C', 'C>B', 'B>A'],
+  theme: 'lava',
+  fares: ['A>B', 'C>B', 'A>C'],
   map: [
     '',
     '',
@@ -699,7 +740,8 @@ const LEVELS = [
 // ---------- 23: HIGH VOLTAGE ----------
 {
   name: 'High Voltage',
-  fares: ['A>B', 'B>C', 'C>A'],
+  theme: 'deepspace',
+  fares: ['A>C', 'B>C', 'A>B'],
   map: [
     '',
     '',
@@ -731,7 +773,8 @@ const LEVELS = [
 // ---------- 24: THE GATE ----------
 {
   name: 'The Gate',
-  fares: ['A>B', 'B>C', 'C>B', 'B>A'],
+  theme: 'ruins',
+  fares: ['A>B', 'C>A', 'B>C', 'A>B'],
   map: [
     '',
     '',
@@ -763,7 +806,8 @@ const LEVELS = [
 // ---------- 25: TESLA TUNNELS ----------
 {
   name: 'Tesla Tunnels',
-  fares: ['A>B', 'B>C', 'C>A'],
+  theme: 'deepspace',
+  fares: ['A>B', 'C>A', 'B>C'],
   map: [
     '',
     '',
@@ -797,7 +841,8 @@ const LEVELS = [
 // ---------- 26: POWER PLANT ----------
 {
   name: 'Power Plant',
-  fares: ['A>B', 'B>D', 'D>C', 'C>A'],
+  theme: 'lava',
+  fares: ['A>C', 'B>D', 'C>A', 'D>B'],
   map: [
     '',
     '',
@@ -831,7 +876,8 @@ const LEVELS = [
 // ---------- 27: GAUNTLET ----------
 {
   name: 'Gauntlet',
-  fares: ['A>B', 'B>C', 'C>D', 'D>A'],
+  theme: 'fortress',
+  fares: ['A>D', 'B>C', 'D>A', 'C>B'],
   map: [
     '',
     '',
@@ -864,7 +910,8 @@ const LEVELS = [
 // ---------- 28: THE MAZE ----------
 {
   name: 'The Maze',
-  fares: ['A>B', 'B>C', 'C>D', 'D>E', 'E>A'],
+  theme: 'ruins',
+  fares: ['A>B', 'C>D', 'E>A', 'B>C', 'D>E'],
   map: [
     '',
     '',
@@ -901,8 +948,9 @@ const LEVELS = [
 // ---------- 29: NIGHT SHIFT ----------
 {
   name: 'Night Shift',
+  theme: 'megacity',
   dark: true,
-  fares: ['A>B', 'B>C', 'C>D', 'D>A'],
+  fares: ['A>B', 'C>D', 'B>A', 'D>C'],
   map: [
     '',
     '',
@@ -936,7 +984,8 @@ const LEVELS = [
 // ---------- 30: FINAL FARE ----------
 {
   name: 'Final Fare',
-  fares: ['A>B', 'B>C', 'C>D', 'D>E', 'E>A'],
+  theme: 'carnival',
+  fares: ['A>C', 'B>D', 'E>A', 'C>B', 'D>E'],
   map: [
     '',
     '',
@@ -975,4 +1024,4 @@ const LEVELS = [
 
 ];
 
-if (typeof module !== 'undefined') module.exports = { LEVELS };
+if (typeof module !== 'undefined') module.exports = { LEVELS, THEMES };

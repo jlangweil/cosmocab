@@ -147,6 +147,7 @@ const AudioSys = (() => {
     hurry() { blip(880, 0.1, 'square', 0.2); setTimeout(() => blip(880, 0.1, 'square', 0.2), 160); },
     bonus() { blip(1200, 0.12, 'triangle', 0.2, 1800); },
     zap() { noiseHit(0.2, 0.4, 3000, 'highpass'); blip(2000, 0.15, 'sawtooth', 0.2, 300); },
+    gate() { noiseHit(0.7, 0.35, 260); blip(170, 0.6, 'sawtooth', 0.14, 70); },
   };
 
   // ---- passenger voices ----

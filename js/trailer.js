@@ -74,6 +74,7 @@ function flameBurst(ship) {
 function loadLevel(idx, song) {
   G.startLevel(idx);
   G.msg = null; G.msgT = 0;          // suppress the level-name banner
+  G.introT = 99;                     // and the board-title intro card
   G.sub = 'play';
   AudioSys.playMusic(song !== undefined ? song : idx + 1);
 }

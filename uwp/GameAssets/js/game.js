@@ -552,7 +552,7 @@ class Passenger {
     this.state = 'waiting'; // waiting -> walking -> boarding -> riding -> exiting -> gone
     this.walkT = 0;
     this.hue = (Math.random() * 360) | 0;
-    this.shout = 1.5 + Math.random() * 2;
+    this.shout = 0.8 + Math.random() * 0.9; // first "Hey, taxi!" comes promptly
     this.hurried = false;
   }
   update(dt, game) {
@@ -562,8 +562,9 @@ class Passenger {
       this.shout -= dt;
       if (this.shout < 0) {
         this.shout = 5 + Math.random() * 6;
-        game.floatText(this.x, this.y - 46, 'TAXI!', '#ffe066');
-        if (Math.random() < 0.5) AudioSys.say('Taxi!');
+        // a fare waiting on another pad calls out so the player can find them
+        game.floatText(this.x, this.y - 46, 'HEY, TAXI!', '#ffe066');
+        AudioSys.say('Hey, taxi!');
       }
       if (ship.landedPad === this.pad && ship.landed) {
         this.state = 'walking';
@@ -582,6 +583,10 @@ class Passenger {
       this.x = ship.x; this.y = ship.y;
     } else if (this.state === 'exiting') {
       this.x += this.exitDir * 70 * dt;
+      // never walk past the pad edge — stop at it and wait to be cleared
+      if (this.exitPad) {
+        this.x = clamp(this.x, this.exitPad.x + 12, this.exitPad.x + this.exitPad.w - 12);
+      }
       this.exitT -= dt;
       if (this.exitT <= 0) this.state = 'gone';
     }
@@ -626,6 +631,8 @@ class Ship {
     this.landedPad = null;
     this.dead = false;
     this.thrustLevel = 0;
+    this.airTime = 0;         // seconds since last takeoff
+    this.tookOffFrom = null;  // pad we last lifted off from
   }
   skids() {
     const cos = Math.cos(this.angle), sin = Math.sin(this.angle);
@@ -644,7 +651,7 @@ class Ship {
       } else {
         this.angle += dir * 3.3 * dt;
         this.angle = clamp(this.angle, -Math.PI * 0.9, Math.PI * 0.9);
-        this.fuel -= 0.6 * dt;
+        this.fuel -= 0.42 * dt;
       }
     }
     this.thrustLevel = lerp(this.thrustLevel, thrusting ? 1 : 0, clamp(dt * 12, 0, 1));
@@ -654,8 +661,13 @@ class Ship {
       const ay = -Math.cos(this.angle) * 470;
       this.vx += ax * dt;
       this.vy += ay * dt;
-      this.fuel -= 4.0 * dt;
-      if (this.landed) { this.landed = false; this.landedPad = null; }
+      this.fuel -= 2.8 * dt;
+      if (this.landed) {
+        this.tookOffFrom = this.landedPad;
+        this.airTime = 0;
+        this.landed = false;
+        this.landedPad = null;
+      }
       // flame particles
       for (let i = 0; i < 3; i++) {
         const back = this.angle + Math.PI / 2 + (Math.random() - 0.5) * 0.5;
@@ -684,7 +696,8 @@ class Ship {
     AudioSys.setEngine(thrusting ? this.thrustLevel : 0, rotating && !this.landed);
 
     if (!this.landed) {
-      this.vy += 225 * dt; // gravity
+      this.airTime += dt;
+      this.vy += 175 * dt; // gravity
       this.vx *= 1 - 0.06 * dt;
       this.vy *= 1 - 0.03 * dt;
       this.x += this.vx * dt;
@@ -788,6 +801,9 @@ const G = {
   shake: 0,
   msg: null, msgT: 0,
   floats: [],
+  introT: 99,
+  pendingFare: 0, // sim-time countdown to the next passenger spawn
+  exitGate: null, // final step: fly out through an opened border section
   sub: 'play', // play | dead | fuelout | complete | paused | winall
   deathReason: '',
   completeT: 0,
@@ -813,12 +829,22 @@ const G = {
     this.floats = [];
     particles.length = 0;
     this.time = 0;
+    this.introT = 0; // animated board-title card plays until INTRO_DUR
+    this.pendingFare = 0;
+    this.exitGate = null;
     this.cam.x = this.ship.x - VIEW_W / 2;
     this.cam.y = this.ship.y - VIEW_H / 2;
     this.spawnFare();
-    this.showMsg(`LEVEL ${idx + 1}: ${this.level.name.toUpperCase()}`, 3);
-    AudioSys.playMusic(idx + 1);
+    this.sub = 'intro'; // standalone board-title screen before play begins
+    AudioSys.playMusic(61 + idx % 3); // intro jingle, distinct from board music
     state = ST.GAME;
+  },
+
+  beginPlay() {
+    if (this.sub !== 'intro') return;
+    this.sub = 'play';
+    this.introT = 99;
+    AudioSys.playMusic(this.levelIndex + 1);
   },
 
   padByLabel(l) { return this.level.pads.find(p => p.label === l); },
@@ -828,6 +854,18 @@ const G = {
     if (!fare) return;
     const fromPad = this.padByLabel(fare.from);
     this.passenger = new Passenger(fromPad, fare.to);
+    // If the cab is already at this pad (parked on it, or descending onto it at
+    // the start of the board), place the fare at the far edge — opposite the
+    // cab — so you always watch them walk the length of the pad and climb in.
+    const ship = this.ship;
+    const overX = ship.x > fromPad.x - 8 && ship.x < fromPad.x + fromPad.w + 8;
+    const atPad = (ship.landed && ship.landedPad === fromPad) ||
+                  (!ship.landed && overX && ship.y < fromPad.y + 40);
+    if (atPad) {
+      const onLeft = ship.x < fromPad.x + fromPad.w / 2;
+      this.passenger.x = onLeft ? fromPad.x + fromPad.w - 16 : fromPad.x + 16;
+      this.passenger.y = fromPad.y;
+    }
     const d = Math.hypot(
       (this.padByLabel(fare.to).x - fromPad.x),
       (this.padByLabel(fare.to).y - fromPad.y));
@@ -839,11 +877,19 @@ const G = {
   onPickup(pass) {
     this.score += 100;
     this.floatText(this.ship.x, this.ship.y - 50, '+100', '#7cff9a');
-    this.showMsg(`TAKE ME TO PAD ${pass.dest}!`, 2.5);
     AudioSys.sfx.pickup();
-    AudioSys.say('Pad ' + pass.dest + ', please!');
     this.fareTimer = 0;
     this.saidHurry = false;
+    if (this.fareIndex >= this.level.fares.length - 1) {
+      // last fare: once aboard, this passenger calls the exit direction and
+      // rides out through the wall — no pad destination for the final fare
+      this.score += 200;
+      this.floatText(this.ship.x, this.ship.y - 68, '+200', '#7cff9a');
+      this.openExit();
+    } else {
+      this.showMsg(`TAKE ME TO PAD ${pass.dest}!`, 2.5);
+      AudioSys.say('Pad ' + pass.dest + ', please!');
+    }
   },
 
   onDeliver() {
@@ -852,20 +898,126 @@ const G = {
     if (fast) pts += 100;
     this.score += pts;
     this.floatText(this.ship.x, this.ship.y - 50, '+' + pts, '#7cff9a');
-    this.showMsg(fast ? 'DELIVERED! FAST BONUS!' : 'DELIVERED!', 2);
+    // the fare pays for gas — a fuel top-up per delivery that scales the
+    // budget with board length (more fares on longer boards = more refuel)
+    const before = this.ship.fuel;
+    this.ship.fuel = Math.min(100, this.ship.fuel + 16);
+    if (this.ship.fuel - before > 1) {
+      this.floatText(this.ship.x, this.ship.y - 28, '+FUEL', '#66ffcc');
+    }
     AudioSys.sfx.dropoff();
-    AudioSys.say(['Thanks!', 'Thank you!', 'Keep the change!'][Math.random() * 3 | 0]);
     const pass = this.passenger;
-    pass.state = 'exiting';
-    pass.exitDir = Math.random() < 0.5 ? -1 : 1;
-    pass.exitT = 1.4;
-    pass.x = this.ship.x; pass.y = this.ship.landedPad.y;
     this.fareIndex++;
     if (this.fareIndex >= this.level.fares.length) {
-      this.completeLevel();
-    } else {
-      setTimeout(() => { if (this.sub === 'play') this.spawnFare(); }, 900);
+      // final step: the last passenger stays aboard and calls the exit —
+      // a section of the border wall opens and you fly the cab out
+      this.openExit();
+      return;
     }
+    this.showMsg(fast ? 'DELIVERED! FAST BONUS!' : 'DELIVERED!', 2);
+    AudioSys.say(['Thanks!', 'Thank you!', 'Keep the change!'][Math.random() * 3 | 0]);
+    const dropPad = this.ship.landedPad;
+    pass.state = 'exiting';
+    // step off toward the roomier side, but stay ON the pad (don't walk off
+    // the edge into space when the cab leaves for a different pad)
+    pass.exitDir = (this.ship.x - (dropPad.x + dropPad.w / 2)) < 0 ? 1 : -1;
+    pass.exitT = 1.4;
+    pass.exitPad = dropPad;
+    pass.x = this.ship.x; pass.y = dropPad.y;
+    // If the next fare waits on the very pad we're parked on, give a longer
+    // beat so the pad clears before they stroll on (see spawnFare for placement).
+    const nextFare = this.level.fares[this.fareIndex];
+    const samePad = nextFare && nextFare.from === dropPad.label;
+    this.pendingFare = samePad ? 3 + Math.random() : 0.9;
+  },
+
+  // choose a border section with clear interior approach for the exit opening
+  pickExit() {
+    const GW = 100, L = this.level;
+    const overlap = (a, b) => !(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y);
+    const solids = L.walls.concat(L.pads);
+    const clearOfWalls = r => !solids.some(w => overlap(r, w));
+    // static footprint of a hazard (blink state ignored — for placement we
+    // avoid anywhere a hazard can occupy, so exits steer clear of lasers,
+    // fans, patrolling blocks, and rock-fall columns)
+    const hazBlocks = r => this.hazardObjs.some(h => {
+      if (h instanceof Beam) {
+        for (let t = 0; t <= 1; t += 0.05) {
+          const x = h.a[0] + (h.b[0] - h.a[0]) * t, y = h.a[1] + (h.b[1] - h.a[1]) * t;
+          if (x >= r.x - 8 && x <= r.x + r.w + 8 && y >= r.y - 8 && y <= r.y + r.h + 8) return true;
+        }
+        return false;
+      }
+      if (h instanceof Fan) {
+        const nx = clamp(h.x, r.x, r.x + r.w), ny = clamp(h.y, r.y, r.y + r.h);
+        return Math.hypot(h.x - nx, h.y - ny) < h.r + 8;
+      }
+      if (h instanceof Mover) {
+        let minx = h.bx, maxx = h.bx + h.w, miny = h.by, maxy = h.by + h.h;
+        if (h.axis === 'x') { minx = Math.min(h.bx, h.bx + h.range); maxx = Math.max(h.bx, h.bx + h.range) + h.w; }
+        else { miny = Math.min(h.by, h.by + h.range); maxy = Math.max(h.by, h.by + h.range) + h.h; }
+        return overlap(r, { x: minx, y: miny, w: maxx - minx, h: maxy - miny });
+      }
+      if (h instanceof RockSpawner) return !(r.x + r.w <= h.x0 || h.x1 <= r.x); // full fall column
+      return false;
+    });
+    const clear = r => clearOfWalls(r) && !hazBlocks(r);
+    // how far the clear channel extends inward from an opening (deeper = more
+    // open runway to line up the exit, i.e. away from obstacles)
+    const channelDepth = (cx, edge) => {
+      let d = 44;
+      const cap = L.H * 0.6;
+      while (d < cap) {
+        const r = edge === 'up'
+          ? { x: cx - GW / 2, y: d, w: GW, h: 20 }
+          : { x: cx - GW / 2, y: L.H - d - 20, w: GW, h: 20 };
+        if (!clear(r)) break;
+        d += 20;
+      }
+      return d;
+    };
+    // Exits are only ever up or down, placed near the horizontal center. Score
+    // rewards a deep clear channel and penalizes distance from center, so the
+    // opening lands as centered as possible on whichever edge is most open.
+    const cands = [];
+    for (let cx = 140; cx <= L.W - 140; cx += 20) {
+      for (const edge of ['up', 'down']) {
+        const probe = edge === 'up'
+          ? { x: cx - GW / 2, y: 44, w: GW, h: 112 }
+          : { x: cx - GW / 2, y: L.H - 156, w: GW, h: 112 };
+        if (!clear(probe)) continue;
+        const depth = channelDepth(cx, edge);
+        const centerDist = Math.abs(cx - L.W / 2);
+        cands.push({ edge, cx, cy: edge === 'up' ? 0 : L.H, score: depth * 0.6 - centerDist });
+      }
+    }
+    cands.sort((a, b) => b.score - a.score);
+    const pick = cands[0] || { edge: 'up', cx: L.W / 2, cy: 0 };
+    // The pass-through corridor must reach far enough INSIDE the border that
+    // the ship enters it before its hull (radius SHIP_R) touches the wall's
+    // inner face at CELL. CELL(40) + SHIP_R(15) = 55, so a 70px inner lip
+    // gives 15px of margin. It stays within the 112px zone verified clear above.
+    const IN = 70, OUT = 70;
+    const rect = pick.edge === 'up'
+      ? { x: pick.cx - GW / 2, y: -OUT, w: GW, h: OUT + IN }
+      : { x: pick.cx - GW / 2, y: L.H - IN, w: GW, h: OUT + IN };
+    return Object.assign(pick, { rect, openT: 0, GW });
+  },
+
+  inExitCorridor(x, y) {
+    const g = this.exitGate;
+    if (!g || g.openT < 0.65) return false;
+    const r = g.rect;
+    return x > r.x && x < r.x + r.w && y > r.y && y < r.y + r.h;
+  },
+
+  openExit() {
+    this.exitGate = this.pickExit();
+    this.saidHurry = true; // no HURRY nag during the exit run
+    const word = { up: 'UP', down: 'DOWN', left: 'LEFT', right: 'RIGHT' }[this.exitGate.edge];
+    this.showMsg(word + ' PLEASE!', 3.5);
+    AudioSys.say(word.charAt(0) + word.slice(1).toLowerCase() + ' please!');
+    if (AudioSys.sfx.gate) AudioSys.sfx.gate();
   },
 
   completeLevel() {
@@ -923,6 +1075,13 @@ const G = {
 
     if (this.sub === 'paused') return;
 
+    // board-title screen: the world is hidden and frozen until it ends
+    if (this.sub === 'intro') {
+      this.introT += dt;
+      if (this.introT >= INTRO_DUR) this.beginPlay();
+      return;
+    }
+
     for (const h of this.hazardObjs) h.update(dt, this);
 
     if (this.sub === 'complete') {
@@ -936,6 +1095,13 @@ const G = {
     const wasLanded = ship.landed;
     ship.update(dt, this);
     this.fareTimer += dt;
+    if (this.pendingFare > 0) {
+      this.pendingFare -= dt;
+      if (this.pendingFare <= 0) this.spawnFare();
+    }
+    if (this.exitGate && this.exitGate.openT < 1) {
+      this.exitGate.openT = Math.min(1, this.exitGate.openT + dt / 0.9);
+    }
 
     // hurry message
     if (this.passenger && this.passenger.state === 'riding' && !this.saidHurry && this.fareTimer > this.parTime * 0.65) {
@@ -965,15 +1131,21 @@ const G = {
             ship.landedPad = pad;
             ship.y = top - 19;
             const smooth = ship.vy < 55 && Math.abs(ship.vx) < 30;
+            // no bonus for hopping in place: a smooth landing only pays when
+            // it followed a real flight (different pad, or airborne a while)
+            const rehop = pad === ship.tookOffFrom && ship.airTime < 1.5;
+            // the board-start descent onto the spawn pad isn't an earned landing
+            const spawnDrop = ship.tookOffFrom === null;
             ship.vx = 0; ship.vy = 0;
             AudioSys.sfx.land();
-            if (smooth) {
+            if (smooth && !rehop && !spawnDrop) {
               this.score += 50;
               this.floatText(ship.x, ship.y - 40, 'SMOOTH +50', '#8ecbff');
             }
             if (ship.fuel <= 0) { this.outOfFuel(); return; }
-            // delivery?
-            if (this.passenger && this.passenger.state === 'riding' && pad.label === this.passenger.dest) {
+            // delivery? (never once the exit gate is open — the final fare
+            // rides out, it must not re-trigger by re-landing on its pad)
+            if (!this.exitGate && this.passenger && this.passenger.state === 'riding' && pad.label === this.passenger.dest) {
               this.onDeliver();
             }
             handled = true;
@@ -985,14 +1157,26 @@ const G = {
         }
       }
       if (!handled && !ship.landed) {
+        const inGate = this.inExitCorridor(ship.x, ship.y);
         // wall collisions (pads act as walls when not landing on top)
         for (const w of this.level.walls) {
-          if (circleRect(ship.x, ship.y, SHIP_R, w.x, w.y, w.w, w.h)) { this.crash('CRASHED!'); return; }
+          if (circleRect(ship.x, ship.y, SHIP_R, w.x, w.y, w.w, w.h)) {
+            if (inGate) continue; // passing through the opened border section
+            this.crash('CRASHED!'); return;
+          }
         }
         for (const pad of this.level.pads) {
           if (circleRect(ship.x, ship.y, SHIP_R - 2, pad.x, pad.y + 6, pad.w, pad.h - 6)) { this.crash('CRASHED!'); return; }
         }
-        if (ship.x < CELL * 0.5 || ship.x > this.level.W - CELL * 0.5 || ship.y < CELL * 0.5 || ship.y > this.level.H - CELL * 0.5) {
+        if (inGate) {
+          const g = this.exitGate;
+          const out =
+            g.edge === 'up' ? ship.y < -20 :
+            g.edge === 'down' ? ship.y > this.level.H + 20 :
+            g.edge === 'left' ? ship.x < -20 :
+            ship.x > this.level.W + 20;
+          if (out) { this.completeLevel(); return; }
+        } else if (ship.x < CELL * 0.5 || ship.x > this.level.W - CELL * 0.5 || ship.y < CELL * 0.5 || ship.y > this.level.H - CELL * 0.5) {
           this.crash('CRASHED!');
           return;
         }
@@ -1048,6 +1232,14 @@ function handleGameInput() {
   const rPressed = wasPressed(['KeyR']) || pad.pressed.restart;
   const upP = wasPressed(['ArrowUp', 'KeyW']) || pad.pressed.up;
   const downP = wasPressed(['ArrowDown', 'KeyS']) || pad.pressed.down;
+
+  if (G.sub === 'intro') {
+    if (enterPressed || escPressed || rPressed ||
+        wasPressed(bindingsFor('thrust')) || actionPressed('horn')) {
+      G.beginPlay();
+    }
+    return;
+  }
 
   if (G.sub === 'play') {
     if (actionPressed('horn')) {
@@ -1189,13 +1381,66 @@ function handleMenuInput() {
 
 /* ============================== rendering ============================== */
 function themeFor(idx) {
-  const hue = (idx * 47 + 215) % 360;
-  return {
-    hue,
-    top: `hsl(${hue}, 45%, 8%)`,
-    bottom: `hsl(${(hue + 40) % 360}, 40%, 16%)`,
-    wall: hue,
-  };
+  return THEMES[LEVELS[idx] && LEVELS[idx].theme] || THEMES.training;
+}
+
+// Theme ambience: lightweight screen-space particles, fully stateless
+// (positions derive from index + time, so nothing to update or store).
+function drawDeco(c, theme, time, camX, camY) {
+  const kind = theme.deco;
+  if (!kind) return;
+  const rnd = mulberry(4242);
+  c.save();
+  for (let i = 0; i < 44; i++) {
+    const seedX = rnd() * (VIEW_W + 60), ph = rnd() * 997, sp = 18 + rnd() * 46, sz = 1 + rnd() * 2.4;
+    const wrap = (v, span) => ((v % span) + span) % span;
+    if (kind === 'snow') {
+      const x = wrap(seedX + Math.sin(time * 0.7 + ph) * 40 - camX * 0.15, VIEW_W + 40) - 20;
+      const y = wrap(ph * 13 + time * sp - camY * 0.15, VIEW_H + 30) - 15;
+      c.globalAlpha = 0.5;
+      c.fillStyle = '#e8f4ff';
+      c.beginPath(); c.arc(x, y, sz, 0, TAU); c.fill();
+    } else if (kind === 'dust') {
+      const x = wrap(seedX + Math.sin(time * 0.4 + ph) * 15 - camX * 0.1, VIEW_W + 40) - 20;
+      const y = wrap(ph * 13 + time * sp * 0.4 - camY * 0.1, VIEW_H + 30) - 15;
+      c.globalAlpha = 0.28;
+      c.fillStyle = '#d8b98a';
+      c.fillRect(x, y, sz, sz);
+    } else if (kind === 'embers') {
+      const x = wrap(seedX + Math.sin(time * 1.1 + ph) * 26 - camX * 0.15, VIEW_W + 40) - 20;
+      const y = VIEW_H - (wrap(ph * 13 + time * sp * 1.2, VIEW_H + 60) - 30);
+      c.globalAlpha = 0.35 + 0.3 * Math.sin(time * 6 + ph);
+      c.fillStyle = i % 3 ? '#ff8a3d' : '#ffd27a';
+      c.beginPath(); c.arc(x, y, sz * 0.9, 0, TAU); c.fill();
+    } else if (kind === 'sparks') {
+      const flick = Math.sin(time * 2.2 + ph * 7.7);
+      if (flick > 0.93) {
+        const x = wrap(seedX - camX * 0.2, VIEW_W + 40) - 20;
+        const y = wrap(ph * 29 - camY * 0.2, VIEW_H);
+        c.globalAlpha = (flick - 0.93) * 12;
+        c.fillStyle = '#ffe9a8';
+        c.fillRect(x, y, 2.5, 2.5);
+      }
+    } else if (kind === 'spores') {
+      const x = wrap(seedX + time * sp * 0.5 - camX * 0.12, VIEW_W + 40) - 20;
+      const y = wrap(ph * 13 + Math.sin(time * 0.8 + ph) * 30 - camY * 0.12, VIEW_H + 30) - 15;
+      c.globalAlpha = 0.3 + 0.2 * Math.sin(time * 3 + ph);
+      c.fillStyle = '#9dffb0';
+      c.beginPath(); c.arc(x, y, sz * 0.8, 0, TAU); c.fill();
+    } else if (kind === 'confetti') {
+      const x = wrap(seedX + Math.sin(time * 1.4 + ph) * 34 - camX * 0.15, VIEW_W + 40) - 20;
+      const y = wrap(ph * 13 + time * sp * 0.9 - camY * 0.15, VIEW_H + 30) - 15;
+      c.globalAlpha = 0.55;
+      c.fillStyle = ['#ff7ad9', '#ffd166', '#66e0ff', '#9dffb0'][i % 4];
+      c.save();
+      c.translate(x, y);
+      c.rotate(time * 2 + ph);
+      c.fillRect(-2.5, -1.5, 5, 3);
+      c.restore();
+    }
+  }
+  c.restore();
+  c.globalAlpha = 1;
 }
 
 const starCache = {};
@@ -1213,12 +1458,12 @@ function getStars(seed, n) {
 
 function drawBackground(c, theme, camX, camY, worldW, worldH, time, dark) {
   const g = c.createLinearGradient(0, 0, 0, VIEW_H);
-  g.addColorStop(0, theme.top);
-  g.addColorStop(1, theme.bottom);
+  g.addColorStop(0, theme.bgTop);
+  g.addColorStop(1, theme.bgBot);
   c.fillStyle = g;
   c.fillRect(0, 0, VIEW_W, VIEW_H);
 
-  const stars = getStars(theme.hue | 0, 130);
+  const stars = getStars(theme.wallH | 0, theme.starBoost ? 260 : 130);
   for (const s of stars) {
     const sx = ((s.x * 2600 - camX * s.layer) % (VIEW_W + 40) + VIEW_W + 40) % (VIEW_W + 40) - 20;
     const sy = ((s.y * 1600 - camY * s.layer) % (VIEW_H + 40) + VIEW_H + 40) % (VIEW_H + 40) - 20;
@@ -1230,32 +1475,35 @@ function drawBackground(c, theme, camX, camY, worldW, worldH, time, dark) {
   c.globalAlpha = 1;
 
   // planets
-  const px = ((theme.hue * 13) % 900) - camX * 0.12;
-  const py = 90 + ((theme.hue * 7) % 200) - camY * 0.12;
-  const pr = 40 + (theme.hue % 50);
+  const ph = theme.planetH;
+  const px = ((theme.wallH * 13 + ph * 3) % 900) - camX * 0.12;
+  const py = 90 + ((theme.wallH * 7) % 200) - camY * 0.12;
+  const pr = (40 + (ph % 50)) * (theme.bigPlanet ? 2.2 : 1);
   const pg = c.createRadialGradient(px - pr * 0.3, py - pr * 0.3, pr * 0.1, px, py, pr);
-  pg.addColorStop(0, `hsla(${(theme.hue + 140) % 360}, 55%, ${dark ? 30 : 55}%, 0.9)`);
-  pg.addColorStop(1, `hsla(${(theme.hue + 140) % 360}, 55%, ${dark ? 8 : 18}%, 0.9)`);
+  pg.addColorStop(0, `hsla(${ph}, 55%, ${dark ? 30 : 55}%, 0.9)`);
+  pg.addColorStop(1, `hsla(${ph}, 55%, ${dark ? 8 : 18}%, 0.9)`);
   c.fillStyle = pg;
   c.beginPath(); c.arc(px, py, pr, 0, TAU); c.fill();
   // ring
   c.save();
   c.translate(px, py); c.rotate(-0.4);
-  c.strokeStyle = `hsla(${(theme.hue + 140) % 360}, 60%, 60%, 0.35)`;
+  c.strokeStyle = `hsla(${ph}, 60%, 60%, 0.35)`;
   c.lineWidth = 5;
   c.beginPath(); c.ellipse(0, 0, pr * 1.6, pr * 0.4, 0, 0, TAU); c.stroke();
   c.restore();
+
+  drawDeco(c, theme, time, camX, camY);
 }
 
 function drawWalls(c, level, theme, time) {
   for (const w of level.walls) {
     const g = c.createLinearGradient(w.x, w.y, w.x, w.y + w.h);
-    g.addColorStop(0, `hsl(${theme.wall}, 22%, 34%)`);
-    g.addColorStop(1, `hsl(${theme.wall}, 25%, 20%)`);
+    g.addColorStop(0, `hsl(${theme.wallH}, ${theme.wallS}%, 34%)`);
+    g.addColorStop(1, `hsl(${theme.wallH}, ${theme.wallS + 3}%, 20%)`);
     c.fillStyle = g;
     c.fillRect(w.x, w.y, w.w, w.h);
     // top edge highlight
-    c.fillStyle = `hsla(${theme.wall}, 45%, 60%, 0.5)`;
+    c.fillStyle = `hsla(${theme.wallH}, ${Math.min(100, theme.wallS + 23)}%, 60%, 0.5)`;
     c.fillRect(w.x, w.y, w.w, 3);
     // panel lines
     c.strokeStyle = 'rgba(0,0,0,0.22)';
@@ -1267,6 +1515,73 @@ function drawWalls(c, level, theme, time) {
       c.beginPath(); c.moveTo(w.x, y); c.lineTo(w.x + w.w, y); c.stroke();
     }
   }
+}
+
+// The opened border section: doors slide apart revealing a void with
+// accent-colored chevrons marching outward toward the next board.
+function drawExitGate(c, gate, theme, time) {
+  const open = 1 - Math.pow(1 - Math.min(1, gate.openT), 3);
+  const GW = gate.GW;
+  const horiz = gate.edge === 'up' || gate.edge === 'down';
+  // border band the gate occupies
+  const band = horiz
+    ? { x: gate.cx - GW / 2, y: gate.edge === 'up' ? 0 : G.level.H - CELL, w: GW, h: CELL }
+    : { x: gate.edge === 'left' ? 0 : G.level.W - CELL, y: gate.cy - GW / 2, w: CELL, h: GW };
+
+  // void behind the doors
+  c.fillStyle = '#03040a';
+  c.fillRect(band.x, band.y, band.w, band.h);
+
+  // marching chevrons pointing outward
+  const phase = (time * 30) % 16;
+  c.save();
+  c.beginPath(); c.rect(band.x, band.y, band.w, band.h); c.clip();
+  c.strokeStyle = theme.accent;
+  c.lineWidth = 3;
+  c.lineJoin = 'round';
+  for (let k = 0; k < 4; k++) {
+    const d = k * 16 + phase;
+    c.globalAlpha = open * Math.max(0.15, 0.75 - k * 0.18);
+    c.beginPath();
+    if (gate.edge === 'up') {
+      const y = band.y + band.h - d;
+      c.moveTo(gate.cx - 14, y + 7); c.lineTo(gate.cx, y - 7); c.lineTo(gate.cx + 14, y + 7);
+    } else if (gate.edge === 'down') {
+      const y = band.y + d;
+      c.moveTo(gate.cx - 14, y - 7); c.lineTo(gate.cx, y + 7); c.lineTo(gate.cx + 14, y - 7);
+    } else if (gate.edge === 'left') {
+      const x = band.x + band.w - d;
+      c.moveTo(x + 7, gate.cy - 14); c.lineTo(x - 7, gate.cy); c.lineTo(x + 7, gate.cy + 14);
+    } else {
+      const x = band.x + d;
+      c.moveTo(x - 7, gate.cy - 14); c.lineTo(x + 7, gate.cy); c.lineTo(x - 7, gate.cy + 14);
+    }
+    c.stroke();
+  }
+  c.globalAlpha = 1;
+
+  // sliding door halves (wall-colored), retracting from the center
+  const cov = (GW / 2) * (1 - open);
+  c.fillStyle = `hsl(${theme.wallH}, ${theme.wallS}%, 30%)`;
+  if (horiz) {
+    c.fillRect(band.x, band.y, cov, band.h);
+    c.fillRect(band.x + band.w - cov, band.y, cov, band.h);
+  } else {
+    c.fillRect(band.x, band.y, band.w, cov);
+    c.fillRect(band.x, band.y + band.h - cov, band.w, cov);
+  }
+  c.restore();
+
+  // pulsing accent frame around the opening
+  c.save();
+  c.strokeStyle = theme.accent;
+  c.shadowColor = theme.accent;
+  c.shadowBlur = 14;
+  c.globalAlpha = open * (0.6 + 0.4 * Math.sin(time * 6));
+  c.lineWidth = 2.5;
+  c.strokeRect(band.x, band.y, band.w, band.h);
+  c.restore();
+  c.globalAlpha = 1;
 }
 
 function drawPads(c, level, time, activePassenger, ship) {
@@ -1336,6 +1651,81 @@ function drawFuels(c, level, time) {
   }
 }
 
+/* --------------------------- board-title intro --------------------------- */
+// A standalone screen shown before each board: theme backdrop, board title,
+// and the cab lazily looping a figure-eight. Its own music plays; the board
+// itself stays hidden and frozen until this ends (or the player skips).
+const INTRO_DUR = 3.4;
+const introShip = new Ship(0, 0);
+
+function drawIntro(c, time) {
+  const t = G.introT;
+  const th = themeFor(G.levelIndex);
+  drawBackground(c, th, time * 40, 0, 4000, 2000, time, false);
+
+  // roaming cab on a figure-eight around the title
+  const a1 = t * 1.05 + 1.1;
+  const sx = VIEW_W / 2 + Math.cos(a1) * 430;
+  const sy = VIEW_H / 2 + Math.sin(a1 * 2) * 185;
+  const vx = -Math.sin(a1);
+  c.save();
+  c.translate(sx, sy);
+  c.rotate(clamp(vx * -0.55, -0.6, 0.6));
+  c.scale(1.5, 1.5);
+  introShip.x = 0; introShip.y = 0; introShip.angle = 0;
+  introShip.thrustLevel = 0.7 + Math.sin(time * 9) * 0.3;
+  introShip.draw(c, time);
+  c.restore();
+
+  // title block
+  const inA = clamp(t / 0.35, 0, 1);
+  const ease = 1 - Math.pow(1 - inA, 3);
+  const bandH = 200;
+  const y0 = VIEW_H / 2 - bandH / 2;
+  c.globalAlpha = 0.8;
+  c.fillStyle = 'rgba(8, 10, 20, 0.85)';
+  c.fillRect(0, y0, VIEW_W, bandH);
+  c.globalAlpha = 1;
+  c.strokeStyle = th.accent;
+  c.lineWidth = 3;
+  c.beginPath(); c.moveTo(VIEW_W * (1 - ease), y0); c.lineTo(VIEW_W, y0); c.stroke();
+  c.beginPath(); c.moveTo(0, y0 + bandH); c.lineTo(VIEW_W * ease, y0 + bandH); c.stroke();
+
+  c.textAlign = 'center';
+  c.textBaseline = 'alphabetic';
+  const pop = 0.92 + 0.08 * ease;
+  c.save();
+  c.translate(VIEW_W / 2, y0 + 88);
+  c.scale(pop, pop);
+  c.font = 'bold 54px "Segoe UI", sans-serif';
+  c.fillStyle = th.accent;
+  c.shadowColor = th.accent;
+  c.shadowBlur = 26;
+  c.fillText(th.name, 0, 0);
+  c.shadowBlur = 0;
+  c.restore();
+
+  c.globalAlpha = clamp((t - 0.35) / 0.4, 0, 1);
+  c.font = '600 24px "Segoe UI", sans-serif';
+  c.fillStyle = '#c9d4ea';
+  c.fillText(`LEVEL ${G.levelIndex + 1}  ·  ${G.level.name.toUpperCase()}`, VIEW_W / 2, y0 + 138);
+
+  c.globalAlpha = 0.6 + 0.3 * Math.sin(time * 4);
+  c.font = '16px "Segoe UI", sans-serif';
+  c.fillStyle = '#8b98b8';
+  c.fillText('Ⓐ / ENTER · SKIP', VIEW_W / 2, VIEW_H - TV_Y - 14);
+  c.globalAlpha = 1;
+
+  // fade from black on entry, to black just before the board appears
+  const fade = Math.max(clamp(1 - t / 0.45, 0, 1), clamp((t - (INTRO_DUR - 0.3)) / 0.3, 0, 1));
+  if (fade > 0) {
+    c.globalAlpha = fade;
+    c.fillStyle = '#000';
+    c.fillRect(0, 0, VIEW_W, VIEW_H);
+    c.globalAlpha = 1;
+  }
+}
+
 function drawHUDPanel(c, x, y, w, h) {
   c.fillStyle = 'rgba(10, 14, 24, 0.72)';
   roundRect(c, x, y, w, h, 10); c.fill();
@@ -1376,19 +1766,28 @@ function drawHUD(c) {
   drawHUDPanel(c, VIEW_W - 258, 14, 244, 74);
   c.fillStyle = '#9fb4d8';
   c.font = '600 12px "Segoe UI", sans-serif';
-  c.fillText('PASSENGER', VIEW_W - 244, 34);
-  c.fillText('DESTINATION', VIEW_W - 244, 66);
-  c.fillStyle = '#ffffff';
-  c.font = 'bold 15px "Segoe UI", sans-serif';
+  c.fillText('PASSENGER', VIEW_W - 200, 34);
+  c.fillText('DESTINATION', VIEW_W - 200, 66);
   const p = G.passenger;
   let pText = '—', dText = '—';
-  if (p && p.state !== 'gone') {
+  if (G.exitGate) {
+    pText = 'ON BOARD';
+    dText = 'EXIT ' + ({ up: '↑', down: '↓', left: '←', right: '→' }[G.exitGate.edge]);
+  } else if (p && p.state !== 'gone') {
     pText = p.state === 'riding' ? 'ON BOARD' : p.state === 'exiting' ? 'DELIVERED' : `WAITING AT PAD ${p.pad.label}`;
-    dText = 'PAD ' + p.dest;
+    // destination stays hidden until the fare is actually aboard
+    dText = p.state === 'riding' ? 'PAD ' + p.dest : '—';
   }
-  c.fillText(pText, VIEW_W - 148, 36);
+  // values centered in the space right of the labels
+  c.textAlign = 'center';
+  const valX = VIEW_W - 87;
+  c.fillStyle = '#ffffff';
+  c.font = 'bold 14px "Segoe UI", sans-serif';
+  c.fillText(pText, valX, 36);
   c.fillStyle = p && p.state === 'riding' ? '#7cff9a' : '#ffffff';
-  c.fillText(dText, VIEW_W - 148, 68);
+  c.font = 'bold 15px "Segoe UI", sans-serif';
+  c.fillText(dText, valX, 68);
+  c.textAlign = 'left';
   c.restore();
 
   // fares progress dots
@@ -1428,6 +1827,10 @@ function drawCenteredOverlay(c, lines) {
 }
 
 function drawGame(c, time) {
+  if (G.sub === 'intro') {
+    drawIntro(c, time);
+    return;
+  }
   const theme = themeFor(G.levelIndex);
   const shakeX = G.shake > 0 ? (Math.random() - 0.5) * 18 * G.shake : 0;
   const shakeY = G.shake > 0 ? (Math.random() - 0.5) * 18 * G.shake : 0;
@@ -1438,6 +1841,7 @@ function drawGame(c, time) {
   c.translate(-G.cam.x + shakeX, -G.cam.y + shakeY);
 
   drawWalls(c, G.level, theme, time);
+  if (G.exitGate) drawExitGate(c, G.exitGate, theme, time);
   drawPads(c, G.level, time, G.passenger, G.ship);
   drawFuels(c, G.level, time);
   for (const h of G.hazardObjs) h.draw(c, time);
@@ -1530,7 +1934,7 @@ function drawGame(c, time) {
 /* ------------------------- menu screens ------------------------- */
 let menuShipT = 0;
 function drawMenuBackdrop(c, time) {
-  drawBackground(c, themeFor(3), time * 20, 0, 4000, 2000, time, false);
+  drawBackground(c, THEMES.megacity, time * 20, 0, 4000, 2000, time, false);
   // drifting taxi
   menuShipT = time;
   const mx = VIEW_W / 2 + Math.sin(time * 0.5) * 300;
@@ -1750,6 +2154,26 @@ AudioSys.setVolumes(save.settings);
 // theme begins on the very first interaction of any kind.
 try { AudioSys.init(); } catch (e) { /* audio unavailable */ }
 window.addEventListener('pointerdown', () => AudioSys.init());
+
+// debug/testing: ?level=N jumps straight into board N; &exit=1 opens the exit gate
+{
+  const m = typeof location !== 'undefined' && location.search.match(/level=(\d+)/);
+  if (m) {
+    const idx = clamp(parseInt(m[1], 10) - 1, 0, LEVELS.length - 1);
+    G.score = 0;
+    G.startLevel(idx);
+    const ex = location.search.match(/exit=(1|up|down|left|right)/);
+    if (ex) {
+      G.sub = 'play';
+      G.introT = 99;
+      G.fareIndex = G.level.fares.length;
+      G.openExit();
+      for (let i = 0; i < 80 && ex[1] !== '1' && G.exitGate.edge !== ex[1]; i++) {
+        G.exitGate = G.pickExit();
+      }
+    }
+  }
+}
 
 scheduleFrame();
 

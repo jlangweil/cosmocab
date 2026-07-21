@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>splash</title>
+<style>html,body{margin:0;padding:0;overflow:hidden;background:#05060e}canvas{position:fixed;inset:0;width:100vw;height:100vh}</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Clean launch splash: space backdrop + the Cosmo Cab + wordmark. Rendered to
+// SplashScreen.png / Wide310x150Logo.png. ?notext=1 omits the title (wide tile).
+const W = 1240, H = 600;
+const NOTEXT = location.search.includes('notext');
+const cv = document.getElementById('c'); cv.width = W; cv.height = H;
+const c = cv.getContext('2d');
+const TAU = Math.PI * 2;
+let seed = 7;
+const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+
+// backdrop
+const bg = c.createLinearGradient(0, 0, W, H);
+bg.addColorStop(0, '#0b0d22'); bg.addColorStop(0.6, '#141134'); bg.addColorStop(1, '#241333');
+c.fillStyle = bg; c.fillRect(0, 0, W, H);
+for (const [nx, ny, nr, col] of [
+  [W * 0.2, H * 0.75, W * 0.4, 'rgba(120,60,160,0.16)'],
+  [W * 0.82, H * 0.28, W * 0.34, 'rgba(50,90,200,0.14)'],
+]) { const g = c.createRadialGradient(nx, ny, 0, nx, ny, nr); g.addColorStop(0, col); g.addColorStop(1, 'rgba(0,0,0,0)'); c.fillStyle = g; c.fillRect(0, 0, W, H); }
+for (let i = 0; i < 240; i++) {
+  const big = rnd() > 0.95; c.globalAlpha = 0.3 + rnd() * 0.7;
+  c.fillStyle = ['#dfe8ff', '#ffe9c9', '#c9d6ff'][i % 3];
+  const x = rnd() * W, y = rnd() * H, r = (0.6 + rnd() * 1.5) * (big ? 2.4 : 1);
+  if (big) { c.shadowColor = '#cfe0ff'; c.shadowBlur = 12; }
+  c.beginPath(); c.arc(x, y, r, 0, TAU); c.fill(); c.shadowBlur = 0;
+}
+c.globalAlpha = 1;
+
+// ringed planet
+(function planet(px, py, pr, hue) {
+  const g = c.createRadialGradient(px - pr * 0.35, py - pr * 0.35, pr * 0.1, px, py, pr);
+  g.addColorStop(0, `hsl(${hue},55%,58%)`); g.addColorStop(1, `hsl(${hue},60%,14%)`);
+  c.fillStyle = g; c.beginPath(); c.arc(px, py, pr, 0, TAU); c.fill();
+  c.save(); c.translate(px, py); c.rotate(-0.35);
+  c.strokeStyle = `hsla(${hue + 30},65%,65%,0.5)`; c.lineWidth = pr * 0.09;
+  c.beginPath(); c.ellipse(0, 0, pr * 1.65, pr * 0.42, 0, 0, TAU); c.stroke(); c.restore();
+})(W * 0.16, H * 0.26, 70, 265);
+
+function roundRect(x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2); c.beginPath(); c.moveTo(x + r, y);
+  c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath();
+}
+
+// the cab (same art language as in-game), banking gently
+c.save();
+c.translate(W * 0.5, H * (NOTEXT ? 0.5 : 0.42));
+c.scale(H / 96, H / 96);
+c.rotate(-0.12);
+// glow + flame
+const gg = c.createRadialGradient(0, 26, 4, 0, 26, 62); gg.addColorStop(0, 'rgba(255,190,80,0.85)'); gg.addColorStop(1, 'rgba(255,120,40,0)');
+c.fillStyle = gg; c.beginPath(); c.arc(0, 26, 62, 0, TAU); c.fill();
+const fl = 34; const fg = c.createLinearGradient(0, 14, 0, 14 + fl * 1.8);
+fg.addColorStop(0, '#fff6cc'); fg.addColorStop(0.45, '#ffaa33'); fg.addColorStop(1, 'rgba(255,60,20,0)');
+c.fillStyle = fg; c.beginPath(); c.moveTo(-7, 15); c.quadraticCurveTo(0, 15 + fl * 1.9, 7, 15); c.closePath(); c.fill();
+for (let i = 0; i < 18; i++) { c.globalAlpha = 0.25 + rnd() * 0.6; c.fillStyle = ['#ffdd66', '#ff9944', '#ff5522'][i % 3]; c.beginPath(); c.arc((rnd() - 0.5) * 22, 26 + rnd() * 68, 1.2 + rnd() * 2.6, 0, TAU); c.fill(); }
+c.globalAlpha = 1;
+// skids
+c.strokeStyle = '#9aa3b5'; c.lineWidth = 3; c.lineCap = 'round';
+c.beginPath(); c.moveTo(-10, 10); c.lineTo(-13, 19); c.stroke();
+c.beginPath(); c.moveTo(10, 10); c.lineTo(13, 19); c.stroke();
+c.lineWidth = 4; c.beginPath(); c.moveTo(-17, 19); c.lineTo(-9, 19); c.stroke(); c.beginPath(); c.moveTo(9, 19); c.lineTo(17, 19); c.stroke();
+// body
+const bgrad = c.createLinearGradient(0, -16, 0, 14); bgrad.addColorStop(0, '#ffd94d'); bgrad.addColorStop(0.6, '#ffb521'); bgrad.addColorStop(1, '#e08a00');
+c.fillStyle = bgrad; roundRect(-18, -12, 36, 26, 11); c.fill();
+c.strokeStyle = 'rgba(0,0,0,0.25)'; c.lineWidth = 1.5; roundRect(-18, -12, 36, 26, 11); c.stroke();
+c.fillStyle = '#20242f'; for (let i = 0; i < 6; i++) if (i % 2 === 0) c.fillRect(-16 + i * 5.4, 4, 5.4, 5);
+const wg = c.createLinearGradient(-6, -12, 8, 0); wg.addColorStop(0, '#cfefff'); wg.addColorStop(1, '#5cb3e6');
+c.fillStyle = wg; roundRect(0, -10, 15, 12, 6); c.fill();
+c.fillStyle = 'rgba(255,255,255,0.55)'; roundRect(3, -8, 6, 4, 2); c.fill();
+c.fillStyle = '#20242f'; roundRect(-9, -19, 18, 8, 3); c.fill();
+c.fillStyle = '#ffe664'; c.font = 'bold 6px monospace'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('TAXI', 0, -14.5);
+c.fillStyle = '#4a5163'; roundRect(-7, 12, 14, 5, 2); c.fill();
+c.restore();
+
+// wordmark
+if (!NOTEXT) {
+  c.textAlign = 'center'; c.textBaseline = 'alphabetic';
+  const size = H * 0.15;
+  c.font = `bold ${size}px "Segoe UI", sans-serif`;
+  const lg = c.createLinearGradient(0, H * 0.72, 0, H * 0.9); lg.addColorStop(0, '#ffe066'); lg.addColorStop(1, '#ff9922');
+  c.fillStyle = lg; c.shadowColor = '#ff9922'; c.shadowBlur = size * 0.4;
+  c.fillText('COSMO CAB', W / 2, H * 0.86); c.shadowBlur = 0;
+}
+</script>
+</body>
+</html>

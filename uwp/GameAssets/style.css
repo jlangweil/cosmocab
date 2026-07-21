@@ -1,8 +1,10 @@
-* { margin: 0; padding: 0; box-sizing: border-box; }
+/* Game is controller/keyboard only — never show a mouse cursor anywhere. */
+* { margin: 0; padding: 0; box-sizing: border-box; cursor: none !important; }
 html, body {
   width: 100%; height: 100%;
   background: #05060e;
   overflow: hidden;
+  cursor: none !important;
 }
 body {
   display: flex;

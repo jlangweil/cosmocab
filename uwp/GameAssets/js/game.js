@@ -51,14 +51,35 @@ function loadSave() {
   } catch (e) { /* corrupt save */ }
   return {};
 }
+const DEFAULT_SETTINGS = { master: 0.8, music: 0.5, sfx: 0.9, scale: 1, difficulty: 'medium', keys: {} };
 const save = Object.assign({
   unlocked: 1,
   highscores: [],
-  settings: { master: 0.8, music: 0.5, sfx: 0.9, scale: 1, keys: {} },
+  settings: Object.assign({}, DEFAULT_SETTINGS),
 }, loadSave());
-save.settings = Object.assign({ master: 0.8, music: 0.5, sfx: 0.9, scale: 1, keys: {} }, save.settings);
+save.settings = Object.assign({}, DEFAULT_SETTINGS, save.settings);
 function persist() {
   try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) { /* storage unavailable */ }
+}
+
+/* ============================== difficulty ============================== */
+// Three feels for the flight model. MEDIUM reproduces the original tuning
+// exactly; EASY is gentler and more forgiving, HARD heavier and stricter.
+//   grav      downward accel (px/s^2)      thrust    engine accel (px/s^2)
+//   rot       turn rate (rad/s)            rotBurn   fuel/s while turning
+//   burn      fuel/s at full thrust        dragX/Y   velocity damping (higher=stops sooner)
+//   landVy/Vx/Ang  crash thresholds        smoothVy/Vx  gentle-landing bonus window
+const DIFFICULTY = {
+  easy:   { grav: 130, thrust: 480, rot: 3.6, rotBurn: 0.30, burn: 2.4, dragX: 0.14, dragY: 0.09, landVy: 195, landVx: 120, landAng: 0.50, smoothVy: 80, smoothVx: 48 },
+  medium: { grav: 175, thrust: 470, rot: 3.3, rotBurn: 0.42, burn: 2.8, dragX: 0.06, dragY: 0.03, landVy: 135, landVx: 85,  landAng: 0.32, smoothVy: 55, smoothVx: 30 },
+  hard:   { grav: 225, thrust: 465, rot: 3.0, rotBurn: 0.52, burn: 3.1, dragX: 0.03, dragY: 0.015, landVy: 100, landVx: 55, landAng: 0.22, smoothVy: 44, smoothVx: 22 },
+};
+let DIFF = DIFFICULTY[save.settings.difficulty] || DIFFICULTY.medium;
+function setDifficulty(name) {
+  if (!DIFFICULTY[name]) name = 'medium';
+  save.settings.difficulty = name;
+  DIFF = DIFFICULTY[name];
+  persist();
 }
 
 /* =============================== input =============================== */
@@ -118,8 +139,11 @@ if (window.chrome && window.chrome.webview && window.chrome.webview.addEventList
 }
 
 // Normalized controller snapshots from whichever source is live.
+// The native bridge only posts on state change plus a ~7/s heartbeat, so the
+// staleness window sits well above that interval — the native path stays live
+// (and never briefly drops to the laggy browser-gamepad fallback) between beats.
 function padSnapshots() {
-  if (nativePad && performance.now() - nativePadMs < 300) {
+  if (nativePad && performance.now() - nativePadMs < 450) {
     const n = nativePad;
     return [{
       native: true,
@@ -543,6 +567,48 @@ function buildHazard(h) {
 }
 
 /* =============================== passenger =============================== */
+// Funny hails a waiting fare shouts to flag you down (plain spelling so the
+// text-to-speech voices pronounce them cleanly).
+const CALLOUTS = [
+  "YO! SPACE CAB!",
+  "I'M LOSING OXYGEN OVER HERE!",
+  "COME ON, CAPTAIN!",
+  "DON'T MAKE ME SPACEWALK!",
+  "I'M STANDING ON AN ASTEROID HERE!",
+  "I'M FREEZING OVER HERE!",
+  "HEY! DOWN HERE, FLYBOY!",
+  "MY METER'S RUNNING, PAL!",
+  "ANY CENTURY NOW, BUDDY!",
+  "LOOK ALIVE UP THERE!",
+  "I GOT PLACES TO BE, CAPTAIN!",
+  "WHAT'S THE MATTER, YOU BLIND?",
+  "OVER HERE, GENIUS!",
+  "I'M WAVING RIGHT HERE!",
+  "THIS ROCK ISN'T COMFY!",
+  "HELLO? PAYING CUSTOMER!",
+];
+// Short reliefs a fare blurts when the cab finally sets down for them.
+const BOARD_CALLS = ["FINALLY!", "ABOUT TIME!", "THERE HE IS!", "YES! OVER HERE!", "NOW WE'RE TALKING!", "MY HERO!"];
+const pickLine = arr => arr[(Math.random() * arr.length) | 0];
+
+// Voice personalities: each fare picks one so their lines stay consistent, and
+// different fares sound clearly distinct. Ranges are [pitch, rate] bands.
+const VOICE_PROFILES = [
+  { pitch: [1.7, 2.0], rate: [1.25, 1.45] }, // squeaky, excitable
+  { pitch: [0.6, 0.8], rate: [0.82, 0.98] }, // gruff, low grumbler
+  { pitch: [1.4, 1.65], rate: [1.05, 1.25] }, // nasal, whiny
+  { pitch: [0.8, 1.0], rate: [0.9, 1.05] },  // booming, deep
+  { pitch: [1.3, 1.55], rate: [1.35, 1.55] }, // chipper motormouth
+  { pitch: [1.0, 1.2], rate: [0.8, 0.92] },  // slow, deadpan drawl
+  { pitch: [1.55, 1.8], rate: [1.4, 1.6] },  // frantic, panicky
+];
+function makeVoice() {
+  const p = VOICE_PROFILES[(Math.random() * VOICE_PROFILES.length) | 0];
+  const span = (a, b) => a + (b - a) * Math.random();
+  // vi selects a distinct installed system voice; pitch/rate shape it further
+  return { pitch: span(p.pitch[0], p.pitch[1]), rate: span(p.rate[0], p.rate[1]), vi: (Math.random() * 1000) | 0 };
+}
+
 class Passenger {
   constructor(pad, destLabel) {
     this.pad = pad;
@@ -552,7 +618,8 @@ class Passenger {
     this.state = 'waiting'; // waiting -> walking -> boarding -> riding -> exiting -> gone
     this.walkT = 0;
     this.hue = (Math.random() * 360) | 0;
-    this.shout = 0.8 + Math.random() * 0.9; // first "Hey, taxi!" comes promptly
+    this.voice = makeVoice();           // this fare's consistent personality
+    this.shout = 0.8 + Math.random() * 0.9; // first hail comes promptly
     this.hurried = false;
   }
   update(dt, game) {
@@ -562,13 +629,14 @@ class Passenger {
       this.shout -= dt;
       if (this.shout < 0) {
         this.shout = 5 + Math.random() * 6;
-        // a fare waiting on another pad calls out so the player can find them
-        game.floatText(this.x, this.y - 46, 'HEY, TAXI!', '#ffe066');
-        AudioSys.say('Hey, taxi!');
+        // a waiting fare hollers so the player can find them
+        const line = pickLine(CALLOUTS);
+        game.floatText(this.x, this.y - 46, line, '#ffe066');
+        AudioSys.say(line, this.voice);
       }
       if (ship.landedPad === this.pad && ship.landed) {
         this.state = 'walking';
-        AudioSys.say(Math.random() < 0.5 ? 'Hey!' : 'Taxi!');
+        AudioSys.say(pickLine(BOARD_CALLS), this.voice);
       }
     } else if (this.state === 'walking') {
       if (!ship.landed || ship.landedPad !== this.pad) { this.state = 'waiting'; return; }
@@ -649,19 +717,19 @@ class Ship {
       if (this.landed) {
         // can't rotate while parked
       } else {
-        this.angle += dir * 3.3 * dt;
+        this.angle += dir * DIFF.rot * dt;
         this.angle = clamp(this.angle, -Math.PI * 0.9, Math.PI * 0.9);
-        this.fuel -= 0.42 * dt;
+        this.fuel -= DIFF.rotBurn * dt;
       }
     }
     this.thrustLevel = lerp(this.thrustLevel, thrusting ? 1 : 0, clamp(dt * 12, 0, 1));
 
     if (thrusting) {
-      const ax = Math.sin(this.angle) * 470;
-      const ay = -Math.cos(this.angle) * 470;
+      const ax = Math.sin(this.angle) * DIFF.thrust;
+      const ay = -Math.cos(this.angle) * DIFF.thrust;
       this.vx += ax * dt;
       this.vy += ay * dt;
-      this.fuel -= 2.8 * dt;
+      this.fuel -= DIFF.burn * dt;
       if (this.landed) {
         this.tookOffFrom = this.landedPad;
         this.airTime = 0;
@@ -697,9 +765,9 @@ class Ship {
 
     if (!this.landed) {
       this.airTime += dt;
-      this.vy += 175 * dt; // gravity
-      this.vx *= 1 - 0.06 * dt;
-      this.vy *= 1 - 0.03 * dt;
+      this.vy += DIFF.grav * dt; // gravity
+      this.vx *= 1 - DIFF.dragX * dt;
+      this.vy *= 1 - DIFF.dragY * dt;
       this.x += this.vx * dt;
       this.y += this.vy * dt;
       // settle angle toward level slowly when not rotating
@@ -888,7 +956,7 @@ const G = {
       this.openExit();
     } else {
       this.showMsg(`TAKE ME TO PAD ${pass.dest}!`, 2.5);
-      AudioSys.say('Pad ' + pass.dest + ', please!');
+      AudioSys.say('Pad ' + pass.dest + ', and step on it!', pass.voice);
     }
   },
 
@@ -915,7 +983,7 @@ const G = {
       return;
     }
     this.showMsg(fast ? 'DELIVERED! FAST BONUS!' : 'DELIVERED!', 2);
-    AudioSys.say(['Thanks!', 'Thank you!', 'Keep the change!'][Math.random() * 3 | 0]);
+    AudioSys.say(pickLine(["Thanks a million, pal!", "You're a lifesaver!", "Keep the change, captain!", "Now that's a ride!", "You did good, flyboy!"]), pass.voice);
     const dropPad = this.ship.landedPad;
     pass.state = 'exiting';
     // step off toward the roomier side, but stay ON the pad (don't walk off
@@ -1016,7 +1084,8 @@ const G = {
     this.saidHurry = true; // no HURRY nag during the exit run
     const word = { up: 'UP', down: 'DOWN', left: 'LEFT', right: 'RIGHT' }[this.exitGate.edge];
     this.showMsg(word + ' PLEASE!', 3.5);
-    AudioSys.say(word.charAt(0) + word.slice(1).toLowerCase() + ' please!');
+    const voice = this.passenger && this.passenger.voice;
+    AudioSys.say(word.charAt(0) + word.slice(1).toLowerCase() + ', please!', voice);
     if (AudioSys.sfx.gate) AudioSys.sfx.gate();
   },
 
@@ -1108,7 +1177,8 @@ const G = {
       this.saidHurry = true;
       this.showMsg('HURRY!', 1.6);
       AudioSys.sfx.hurry();
-      AudioSys.say('Hurry!');
+      AudioSys.say(pickLine(["Come on, come on!", "Any day now!", "Step on it, pal!", "I'm not getting younger!"]),
+        this.passenger && this.passenger.voice);
     }
 
     if (ship.fuel <= 0 && !ship.landed && this.sub === 'play') {
@@ -1125,12 +1195,12 @@ const G = {
         const inX = sl.x > pad.x - 2 && sr.x < pad.x + pad.w + 2;
         const nearTop = Math.max(sl.y, sr.y) > top - 4 && Math.max(sl.y, sr.y) < top + 14;
         if (inX && nearTop && ship.vy >= 0) {
-          if (ship.vy < 135 && Math.abs(ship.vx) < 85 && Math.abs(ship.angle) < 0.32) {
+          if (ship.vy < DIFF.landVy && Math.abs(ship.vx) < DIFF.landVx && Math.abs(ship.angle) < DIFF.landAng) {
             // touchdown
             ship.landed = true;
             ship.landedPad = pad;
             ship.y = top - 19;
-            const smooth = ship.vy < 55 && Math.abs(ship.vx) < 30;
+            const smooth = ship.vy < DIFF.smoothVy && Math.abs(ship.vx) < DIFF.smoothVx;
             // no bonus for hopping in place: a smooth landing only pays when
             // it followed a real flight (different pad, or airborne a while)
             const rehop = pad === ship.tookOffFrom && ship.airTime < 1.5;
@@ -1150,7 +1220,7 @@ const G = {
             }
             handled = true;
           } else {
-            this.crash(ship.vy >= 135 ? 'CAME IN TOO HOT!' : Math.abs(ship.angle) >= 1.52 ? 'LANDED CROOKED!' : 'TOO MUCH DRIFT!');
+            this.crash(ship.vy >= DIFF.landVy ? 'CAME IN TOO HOT!' : Math.abs(ship.angle) >= DIFF.landAng ? 'LANDED CROOKED!' : 'TOO MUCH DRIFT!');
             return;
           }
           break;
@@ -1310,7 +1380,12 @@ function navGate(active) {
 function settingsItems() {
   const s = save.settings;
   // Controller-only build: no keyboard remapping entries.
+  const diffs = ['easy', 'medium', 'hard'];
   return [
+    { label: 'DIFFICULTY', value: (s.difficulty || 'medium').toUpperCase(), adjust: d => {
+        let i = diffs.indexOf(s.difficulty || 'medium'); if (i < 0) i = 1;
+        setDifficulty(diffs[clamp(i + d, 0, diffs.length - 1)]);
+      } },
     { label: 'MASTER VOLUME', value: Math.round(s.master * 100) + '%', adjust: d => { s.master = clamp(s.master + d * 0.1, 0, 1); } },
     { label: 'MUSIC VOLUME', value: Math.round(s.music * 100) + '%', adjust: d => { s.music = clamp(s.music + d * 0.1, 0, 1); } },
     { label: 'SFX VOLUME', value: Math.round(s.sfx * 100) + '%', adjust: d => { s.sfx = clamp(s.sfx + d * 0.1, 0, 1); } },
@@ -2095,6 +2170,7 @@ let lastResumeTry = 0;
 let lastFrameMs = 0;
 let rafQueued = false;
 const STEP = 1 / 120;
+const MAX_STEPS = 6; // most physics ticks allowed to run in one rendered frame
 
 function scheduleFrame() {
   if (rafQueued) return;
@@ -2105,7 +2181,10 @@ function scheduleFrame() {
 function frame(now) {
   scheduleFrame();
   lastFrameMs = performance.now();
-  const rawDt = Math.min(0.1, (now - lastT) / 1000);
+  // Cap the frame delta hard: a slow frame (Xbox WebView warming up) must never
+  // pile up a burst of physics substeps, or a held thrust applies many times at
+  // once and the ship lurches. 0.05s = at most MAX_STEPS ticks per frame.
+  const rawDt = Math.min(0.05, (now - lastT) / 1000);
   lastT = now;
   const time = now / 1000;
 
@@ -2118,11 +2197,16 @@ function frame(now) {
   if (state === ST.GAME) {
     handleGameInput();
     acc += rawDt;
-    while (acc >= STEP) {
+    let steps = 0;
+    while (acc >= STEP && steps < MAX_STEPS) {
       G.update(STEP);
       acc -= STEP;
+      steps++;
       if (state !== ST.GAME) { acc = 0; break; }
     }
+    // hit the cap (a real hitch) — shed the backlog instead of catching up in a
+    // lurch on the next frame; a hair of slow-motion beats a jump
+    if (steps >= MAX_STEPS) acc = 0;
   } else {
     handleMenuInput();
     updateParticles(rawDt);
@@ -2174,6 +2258,23 @@ window.addEventListener('pointerdown', () => AudioSys.init());
     }
   }
 }
+
+// Warm the physics + particle hot paths at load so the very first thrust on
+// Xbox doesn't stall while the WebView JIT-compiles them (which is what made
+// the initial liftoff jerky). Runs a throwaway thrusting ship offscreen.
+function warmup() {
+  try {
+    const dummy = new Ship(400, 300);
+    keysDown.add('KeyW');
+    for (let i = 0; i < 45; i++) dummy.update(STEP); // thrust: forces + flame particles + engine ramp
+    keysDown.delete('KeyW');
+    explosion(400, 300);                             // explosion allocator
+    for (let i = 0; i < 45; i++) updateParticles(STEP);
+    particles.length = 0;                            // discard the warmup particles
+    AudioSys.setEngine(0, false);
+  } catch (e) { /* warmup is best-effort */ }
+}
+warmup();
 
 scheduleFrame();
 

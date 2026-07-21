@@ -2,9 +2,10 @@
     x:Class="CosmoCab.MainPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:muxc="using:Microsoft.UI.Xaml.Controls">
+    xmlns:muxc="using:Microsoft.UI.Xaml.Controls"
+    RequiresPointer="Never">
 
     <Grid Background="#05060e">
-        <muxc:WebView2 x:Name="GameView" />
+        <muxc:WebView2 x:Name="GameView" RequiresPointer="Never" />
     </Grid>
 </Page>

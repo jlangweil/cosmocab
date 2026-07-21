@@ -14,6 +14,12 @@ namespace CosmoCab
             InitializeComponent();
             Suspending += OnSuspending;
 
+            // Xbox: don't run in "mouse mode". WhenRequested means the gamepad
+            // drives focus navigation and is NOT turned into a screen cursor â€”
+            // which is what WebView2 was rendering. Our game reads the gamepad
+            // directly (Windows.Gaming.Input), so input is unaffected.
+            RequiresPointerMode = ApplicationRequiresPointerMode.WhenRequested;
+
             // The game renders its own UI edge to edge; on Xbox, opt out of the
             // system's automatic 10% scale-back so we control the safe area.
             // (Moved to OnLaunched because GetForCurrentView requires a window.)
@@ -36,7 +42,7 @@ namespace CosmoCab
             }
             catch
             {
-                // Platforms or timing where this is unavailable — ignore.
+                // Platforms or timing where this is unavailable ï¿½ ignore.
             }
 
             if (e.PrelaunchActivated == false)

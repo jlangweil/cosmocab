@@ -154,60 +154,90 @@ const AudioSys = (() => {
   // Radio-chatter chirps: a deterministic per-phrase melody of band-passed
   // blips. Used wherever speech synthesis is unavailable (e.g. the Xbox
   // WebView) so passengers are never silent.
-  function chirp(text) {
+  function chirp(text, voice) {
     if (!ctx) return;
     let h = 0;
     for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) >>> 0;
     const n = 3 + (h % 3);
+    // a fare's voice pitch shifts its whole chirp band so personalities differ
+    const vp = voice ? Math.max(0.6, Math.min(1.7, voice.pitch / 1.4)) : 1;
     let t = ctx.currentTime + 0.02;
     for (let i = 0; i < n; i++) {
-      const f = 480 + ((h >> (i * 4)) % 11) * 85;
+      const last = i === n - 1;
+      const f = (560 + ((h >> (i * 4)) % 11) * 95) * vp; // brighter base for a whimsical tone
       const o = ctx.createOscillator();
       o.type = i % 2 ? 'triangle' : 'square';
       o.frequency.setValueAtTime(f, t);
-      o.frequency.exponentialRampToValueAtTime(f * (1.12 + ((h >> i) % 3) * 0.11), t + 0.07);
+      // the final blip lilts up sharply — a quizzical, questioning uptick
+      const glide = last ? 1.9 : (1.12 + ((h >> i) % 3) * 0.11);
+      o.frequency.exponentialRampToValueAtTime(f * glide, t + (last ? 0.11 : 0.07));
       const bp = ctx.createBiquadFilter();
       bp.type = 'bandpass';
       bp.frequency.value = f * 1.4;
       bp.Q.value = 2;
       const g = ctx.createGain();
-      env(g, t, 0.008, 0.16, 0.07, 0.001);
+      env(g, t, 0.008, 0.16, last ? 0.11 : 0.07, 0.001);
       o.connect(bp).connect(g).connect(sfxBus);
-      o.start(t); o.stop(t + 0.13);
+      o.start(t); o.stop(t + 0.17);
       t += 0.085 + ((h >> i) % 2) * 0.03;
     }
   }
 
-  function say(text) {
+  // Cache the installed system voices (browser path). Different fares get
+  // different real speakers — the single strongest cure for monotone sameness.
+  let sysVoices = [];
+  function loadSysVoices() {
+    try {
+      const all = window.speechSynthesis.getVoices() || [];
+      const en = all.filter(v => /^en/i.test(v.lang));
+      sysVoices = en.length >= 2 ? en : all;
+    } catch (e) { sysVoices = []; }
+  }
+  if (typeof window !== 'undefined' && window.speechSynthesis) {
+    loadSysVoices();
+    try { window.speechSynthesis.onvoiceschanged = loadSysVoices; } catch (e) { /* older */ }
+  }
+
+  // `voice` (optional): { pitch, rate, vi } giving a fare its own consistent
+  // personality. Without one, a random whimsical delivery is used.
+  function say(text, voice) {
+    const pitch = voice ? voice.pitch : 1.35 + Math.random() * 0.65;
+    const rate = voice ? voice.rate : 1.05 + Math.random() * 0.35;
+    const vi = voice ? voice.vi : (Math.random() * 1000) | 0;
     // In the UWP shell (Xbox), ask the host to speak the line through
-    // Windows.Media.SpeechSynthesis — the WebView itself has no voices.
+    // Windows.Media.SpeechSynthesis. seed drives a per-line SSML pitch contour
+    // so the delivery rises and falls instead of running flat/monotone.
     if (window.chrome && window.chrome.webview && window.chrome.webview.postMessage) {
       try {
         window.chrome.webview.postMessage(JSON.stringify({
           t: 'say',
           text: text,
           vol: Math.min(1, vols.sfx * vols.master),
-          pitch: 0.8 + Math.random() * 0.7,
-          rate: 1.15,
+          pitch: pitch,
+          rate: rate,
+          vi: vi,
+          seed: (Math.random() * 1e9) | 0,
         }));
         return;
       } catch (e) { /* fall through */ }
     }
     try {
       if (window.speechSynthesis) {
+        if (!sysVoices.length) loadSysVoices();
         const u = new SpeechSynthesisUtterance(text);
         u.volume = Math.min(1, vols.sfx * vols.master);
-        u.rate = 1.15;
-        u.pitch = 0.8 + Math.random() * 0.7;
+        u.rate = rate;
+        u.pitch = pitch;
+        if (sysVoices.length) u.voice = sysVoices[vi % sysVoices.length];
         let started = false;
         u.onstart = () => { started = true; };
         window.speechSynthesis.speak(u);
         // if speech never actually starts (no voices installed), chirp instead
-        setTimeout(() => { if (!started) chirp(text); }, 450);
+        setTimeout(() => { if (!started) chirp(text, voice); }, 450);
         return;
       }
     } catch (e) { /* fall through to chirp */ }
-    chirp(text);
+    chirp(text, voice);
   }
 
   // ---- procedural music ----

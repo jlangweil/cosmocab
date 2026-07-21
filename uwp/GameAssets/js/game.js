@@ -51,7 +51,7 @@ function loadSave() {
   } catch (e) { /* corrupt save */ }
   return {};
 }
-const DEFAULT_SETTINGS = { master: 0.8, music: 0.5, sfx: 0.9, scale: 1, difficulty: 'medium', keys: {} };
+const DEFAULT_SETTINGS = { master: 0.8, music: 0.5, sfx: 0.9, scale: 1, difficulty: 'easy', keys: {} };
 const save = Object.assign({
   unlocked: 1,
   highscores: [],
@@ -69,10 +69,13 @@ function persist() {
 //   rot       turn rate (rad/s)            rotBurn   fuel/s while turning
 //   burn      fuel/s at full thrust        dragX/Y   velocity damping (higher=stops sooner)
 //   landVy/Vx/Ang  crash thresholds        smoothVy/Vx  gentle-landing bonus window
+//   haz       hazard-strength multiplier for the Outer Rim obstacles (wind,
+//             magnets, tractor beams, black holes, meteors, mines, creatures):
+//             <1 gentler, >1 stronger. Lets the same board scale with skill.
 const DIFFICULTY = {
-  easy:   { grav: 130, thrust: 480, rot: 3.6, rotBurn: 0.30, burn: 2.4, dragX: 0.14, dragY: 0.09, landVy: 195, landVx: 120, landAng: 0.50, smoothVy: 80, smoothVx: 48 },
-  medium: { grav: 175, thrust: 470, rot: 3.3, rotBurn: 0.42, burn: 2.8, dragX: 0.06, dragY: 0.03, landVy: 135, landVx: 85,  landAng: 0.32, smoothVy: 55, smoothVx: 30 },
-  hard:   { grav: 225, thrust: 465, rot: 3.0, rotBurn: 0.52, burn: 3.1, dragX: 0.03, dragY: 0.015, landVy: 100, landVx: 55, landAng: 0.22, smoothVy: 44, smoothVx: 22 },
+  easy:   { grav: 130, thrust: 480, rot: 3.6, rotBurn: 0.30, burn: 2.4, dragX: 0.14, dragY: 0.09, landVy: 195, landVx: 120, landAng: 0.50, smoothVy: 80, smoothVx: 48, haz: 0.72 },
+  medium: { grav: 175, thrust: 470, rot: 3.3, rotBurn: 0.42, burn: 2.8, dragX: 0.06, dragY: 0.03, landVy: 135, landVx: 85,  landAng: 0.32, smoothVy: 55, smoothVx: 30, haz: 1.00 },
+  hard:   { grav: 225, thrust: 465, rot: 3.0, rotBurn: 0.52, burn: 3.1, dragX: 0.03, dragY: 0.015, landVy: 100, landVx: 55, landAng: 0.22, smoothVy: 44, smoothVx: 22, haz: 1.40 },
 };
 let DIFF = DIFFICULTY[save.settings.difficulty] || DIFFICULTY.medium;
 function setDifficulty(name) {
@@ -136,6 +139,19 @@ if (window.chrome && window.chrome.webview && window.chrome.webview.addEventList
       if (d && d.t === 'pad') { nativePad = d; nativePadMs = performance.now(); }
     });
   } catch (e) { /* bridge unavailable */ }
+}
+
+// Quit the app. On Xbox/UWP the WebView can't close its own host window, so we
+// ask the native shell to exit to the dashboard; in a plain browser we fall
+// back to window.close().
+function requestExit() {
+  try {
+    if (window.chrome && window.chrome.webview && window.chrome.webview.postMessage) {
+      window.chrome.webview.postMessage(JSON.stringify({ t: 'exit' }));
+      return;
+    }
+  } catch (e) { /* fall through to browser close */ }
+  try { window.close(); } catch (e) { /* ignore */ }
 }
 
 // Normalized controller snapshots from whichever source is live.
@@ -350,10 +366,26 @@ function parseLevel(def) {
     if (c.b) c.b = [(c.b[0] + 1) * CELL + CELL / 2 - CELL / 2, (c.b[1] + 1) * CELL];
     if (c.c) c.c = [(c.c[0] + 1) * CELL, (c.c[1] + 1) * CELL];
     if (c.p) c.p = [(c.p[0] + 1) * CELL, (c.p[1] + 1) * CELL];
-    if (c.t === 'rocks') { c.x0 = (c.x0 + 1) * CELL; c.x1 = (c.x1 + 1) * CELL; }
+    if (c.t === 'rocks' || c.t === 'meteors') { c.x0 = (c.x0 + 1) * CELL; c.x1 = (c.x1 + 1) * CELL; }
     if (c.r) c.r = c.r * CELL;
     return c;
   });
+
+  // pad modifiers (moving / collapsing / ice / conveyor), keyed by pad label
+  if (def.padMods) {
+    for (const pad of pads) {
+      const m = def.padMods[pad.label];
+      if (!m) continue;
+      if (m.ice) pad.ice = true;
+      if (m.conveyor) pad.conveyor = m.conveyor; // signed px/s drift
+      if (m.collapse) pad.collapse = m.collapse; // seconds after landing
+      if (m.move) {
+        pad.baseX = pad.x; pad.baseY = pad.y;
+        pad.move = { axis: m.move.axis || 'x', range: (m.move.range || 4) * CELL,
+          sp: m.move.sp || 0.6, ph: m.move.ph || 0, stop: m.move.stop || 0, accel: m.move.accel || 0, t: 0 };
+      }
+    }
+  }
 
   const fares = def.fares.map(s => {
     const [from, to] = s.split('>');
@@ -361,7 +393,8 @@ function parseLevel(def) {
   });
 
   return {
-    name: def.name, dark: !!def.dark,
+    name: def.name, dark: !!def.dark, sandstorm: !!def.sandstorm,
+    startFuel: def.fuel || 100,
     W: W * CELL, H: H * CELL,
     walls, pads, fuels, hazards, spawn, fares,
   };
@@ -555,6 +588,284 @@ class RockSpawner {
   }
 }
 
+/* ---- Outer Rim hazards ---------------------------------------------------
+   Force fields expose force(ship, dt); everything still supports update/hits/
+   draw. Coordinates are pre-scaled by parseLevel (c/p in px, r in px). ------ */
+
+// Fan-driven wind: a rectangular zone that pushes the cab (fx,fy px/s^2).
+class Wind {
+  constructor(h) {
+    this.type = 'wind';
+    this.x = h.p[0]; this.y = h.p[1];
+    this.w = (h.w || 4) * CELL; this.h = (h.h || 4) * CELL;
+    this.fx = h.fx || 0; this.fy = h.fy || 0;
+    this.gust = h.gust || 0; this.t = Math.random() * 6;
+  }
+  update(dt) { this.t += dt; }
+  force(ship, dt) {
+    if (ship.dead || ship.landed) return;
+    if (ship.x < this.x || ship.x > this.x + this.w || ship.y < this.y || ship.y > this.y + this.h) return;
+    const g = (this.gust ? 0.55 + 0.45 * Math.sin(this.t * this.gust) : 1) * DIFF.haz;
+    ship.vx += this.fx * g * dt; ship.vy += this.fy * g * dt;
+  }
+  hits() { return false; }
+  draw(c, time) {
+    const dir = Math.atan2(this.fy, this.fx);
+    c.save();
+    c.strokeStyle = 'rgba(150,200,255,0.28)'; c.lineWidth = 2;
+    for (let i = 0; i < 10; i++) {
+      const px = this.x + ((i * 53 + time * (120 + (this.fx > 0 || this.fy > 0 ? 60 : 40))) % this.w);
+      const py = this.y + ((i * 71) % this.h);
+      c.beginPath(); c.moveTo(px, py);
+      c.lineTo(px - Math.cos(dir) * 18, py - Math.sin(dir) * 18); c.stroke();
+    }
+    c.restore();
+  }
+}
+
+// Magnetic zone: blue pulls the cab in, red pushes it away (radial, stronger near center).
+class Magnet {
+  constructor(h) {
+    this.type = 'magnet';
+    this.x = h.c[0]; this.y = h.c[1]; this.r = h.r;
+    this.mode = h.mode || 'pull'; this.str = h.str || 300;
+  }
+  update() {}
+  force(ship, dt) {
+    if (ship.dead || ship.landed) return;
+    const dx = this.x - ship.x, dy = this.y - ship.y, d = Math.hypot(dx, dy);
+    if (d > this.r || d < 1) return;
+    const f = this.str * DIFF.haz * (1 - d / this.r) * (this.mode === 'pull' ? 1 : -1);
+    ship.vx += (dx / d) * f * dt; ship.vy += (dy / d) * f * dt;
+  }
+  hits() { return false; }
+  draw(c, time) {
+    const col = this.mode === 'pull' ? '80,150,255' : '255,80,90';
+    c.save();
+    for (let k = 0; k < 3; k++) {
+      const rr = this.r * (0.4 + 0.3 * k) + (this.mode === 'pull' ? -1 : 1) * ((time * 40 + k * 30) % (this.r * 0.3));
+      c.strokeStyle = `rgba(${col},${0.35 - k * 0.08})`; c.lineWidth = 2;
+      c.beginPath(); c.arc(this.x, this.y, Math.max(6, rr), 0, TAU); c.stroke();
+    }
+    c.fillStyle = `rgba(${col},0.9)`; c.shadowColor = `rgb(${col})`; c.shadowBlur = 16;
+    c.beginPath(); c.arc(this.x, this.y, 9, 0, TAU); c.fill();
+    c.shadowBlur = 0; c.restore();
+  }
+}
+
+// Tractor beam: a steady pull toward a docking point, escapable at full thrust.
+class Tractor {
+  constructor(h) {
+    this.type = 'tractor';
+    this.x = h.c[0]; this.y = h.c[1]; this.r = h.r; this.str = h.str || 330;
+  }
+  update() {}
+  force(ship, dt) {
+    if (ship.dead || ship.landed) return;
+    const dx = this.x - ship.x, dy = this.y - ship.y, d = Math.hypot(dx, dy);
+    if (d > this.r || d < 1) return;
+    const s = this.str * DIFF.haz;
+    ship.vx += (dx / d) * s * dt; ship.vy += (dy / d) * s * dt;
+  }
+  hits() { return false; }
+  draw(c, time) {
+    c.save();
+    c.translate(this.x, this.y);
+    const grad = c.createRadialGradient(0, 0, 6, 0, 0, this.r);
+    grad.addColorStop(0, 'rgba(120,255,210,0.28)'); grad.addColorStop(1, 'rgba(120,255,210,0)');
+    c.fillStyle = grad; c.beginPath(); c.arc(0, 0, this.r, 0, TAU); c.fill();
+    c.strokeStyle = 'rgba(120,255,210,0.5)'; c.lineWidth = 2;
+    for (let k = 0; k < 4; k++) {
+      const rr = ((time * 50 + k * (this.r / 4)) % this.r);
+      c.globalAlpha = 1 - rr / this.r;
+      c.beginPath(); c.arc(0, 0, rr, 0, TAU); c.stroke();
+    }
+    c.globalAlpha = 1;
+    c.fillStyle = '#39404f'; c.beginPath(); c.arc(0, 0, 14, 0, TAU); c.fill();
+    c.fillStyle = '#7cffd2'; c.beginPath(); c.arc(0, 0, 6, 0, TAU); c.fill();
+    c.restore();
+  }
+}
+
+// Black hole: pull grows sharply near the core; the core itself is fatal.
+class BlackHole {
+  constructor(h) {
+    this.type = 'blackhole';
+    this.x = h.c[0]; this.y = h.c[1]; this.r = h.r; this.core = 24; this.spin = 0;
+  }
+  update(dt) { this.spin += dt * 2.4; }
+  force(ship, dt) {
+    if (ship.dead || ship.landed) return;
+    const dx = this.x - ship.x, dy = this.y - ship.y, d = Math.hypot(dx, dy);
+    if (d > this.r || d < 1) return;
+    // inverse-square pull, now strong enough to be felt from well out and to
+    // out-muscle the engine near the core; scales hard with difficulty.
+    const pull = clamp(1.5e6 * DIFF.haz / (d * d), 0, 2600 * DIFF.haz);
+    ship.vx += (dx / d) * pull * dt; ship.vy += (dy / d) * pull * dt;
+    // a little swirl so it feels like an accretion spin
+    ship.vx += (-dy / d) * pull * 0.25 * dt; ship.vy += (dx / d) * pull * 0.25 * dt;
+  }
+  hits(x, y, r) { return Math.hypot(x - this.x, y - this.y) < this.core + r; }
+  draw(c, time) {
+    c.save(); c.translate(this.x, this.y);
+    const halo = c.createRadialGradient(0, 0, this.core, 0, 0, this.r);
+    halo.addColorStop(0, 'rgba(120,60,180,0.30)'); halo.addColorStop(1, 'rgba(120,60,180,0)');
+    c.fillStyle = halo; c.beginPath(); c.arc(0, 0, this.r, 0, TAU); c.fill();
+    c.rotate(this.spin);
+    for (let k = 0; k < 3; k++) {
+      c.strokeStyle = `rgba(200,150,255,${0.5 - k * 0.15})`; c.lineWidth = 3 - k;
+      c.beginPath(); c.ellipse(0, 0, this.core + 10 + k * 12, this.core * 0.5 + k * 6, k * 1.1, 0, TAU); c.stroke();
+    }
+    c.fillStyle = '#000'; c.beginPath(); c.arc(0, 0, this.core, 0, TAU); c.fill();
+    c.strokeStyle = 'rgba(190,140,255,0.9)'; c.lineWidth = 2;
+    c.beginPath(); c.arc(0, 0, this.core, 0, TAU); c.stroke();
+    c.restore();
+  }
+}
+
+// Meteors: fast diagonal strikes from the top with a glowing trail.
+class MeteorSpawner {
+  constructor(h) {
+    this.type = 'meteors';
+    this.x0 = h.x0; this.x1 = h.x1; this.iv = h.iv;
+    this.vx = (h.ang || 0) * 60; this.timer = Math.random() * h.iv;
+    this.rocks = []; this.nextId = 1;
+  }
+  update(dt, core) {
+    this.timer -= dt;
+    if (this.timer <= 0) {
+      this.timer += this.iv * (0.6 + Math.random() * 0.7) / DIFF.haz;
+      this.rocks.push({ id: this.nextId++, x: this.x0 + Math.random() * (this.x1 - this.x0), y: CELL,
+        vx: this.vx + (Math.random() - 0.5) * 30, vy: 190 + Math.random() * 90, r: 8 + Math.random() * 7, rot: 0, vr: (Math.random() - 0.5) * 6 });
+    }
+    for (let i = this.rocks.length - 1; i >= 0; i--) {
+      const rk = this.rocks[i];
+      rk.vy += 120 * dt; rk.x += rk.vx * dt; rk.y += rk.vy * dt; rk.rot += rk.vr * dt;
+      spawnParticle({ x: rk.x, y: rk.y, vx: -rk.vx * 0.3, vy: -rk.vy * 0.2, life: 0.35, maxLife: 0.35, size: rk.r * 0.5, color: ['#ffce7a', '#ff8a3d', '#ff5522'][i % 3], glow: true, shrink: true });
+      let dead = rk.y > core.level.H + 40 || rk.x < -40 || rk.x > core.level.W + 40;
+      if (!dead) for (const w of core.level.walls) { if (circleRect(rk.x, rk.y, rk.r, w.x, w.y, w.w, w.h)) { dead = true; break; } }
+      if (dead) { core.emit && 0; explosion(rk.x, rk.y); this.rocks.splice(i, 1); }
+    }
+  }
+  hits(x, y, r) { return this.rocks.some(rk => Math.hypot(rk.x - x, rk.y - y) < rk.r + r - 2); }
+  draw(c) {
+    for (const rk of this.rocks) {
+      c.save(); c.translate(rk.x, rk.y); c.rotate(rk.rot);
+      c.fillStyle = '#c8632a'; c.shadowColor = '#ff7a2a'; c.shadowBlur = 14;
+      c.beginPath(); c.arc(0, 0, rk.r, 0, TAU); c.fill(); c.shadowBlur = 0;
+      c.fillStyle = 'rgba(255,220,150,0.5)'; c.beginPath(); c.arc(-rk.r * 0.3, -rk.r * 0.3, rk.r * 0.4, 0, TAU); c.fill();
+      c.restore();
+    }
+  }
+}
+
+// Proximity mine: arms when the cab is near, short fuse, then a lethal blast.
+class Mine {
+  constructor(h) {
+    this.type = 'mine';
+    this.x = h.c[0]; this.y = h.c[1];
+    this.trigR = (h.r || 88) * (0.85 + 0.15 * DIFF.haz); this.blastR = 74 * DIFF.haz;
+    this.state = 'idle'; this.fuse = 0; this.blastT = 0; this.blink = 0;
+  }
+  update(dt, core) {
+    const ship = core.ship;
+    this.blink += dt;
+    if (this.state === 'idle') {
+      if (!ship.dead && Math.hypot(ship.x - this.x, ship.y - this.y) < this.trigR) { this.state = 'armed'; this.fuse = 0.85 / DIFF.haz; AudioSys.sfx.mine && AudioSys.sfx.mine(); }
+    } else if (this.state === 'armed') {
+      this.fuse -= dt;
+      if (this.fuse <= 0) { this.state = 'boom'; this.blastT = 0.35; explosion(this.x, this.y); AudioSys.sfx.explosion(); }
+    } else if (this.state === 'boom') { this.blastT -= dt; if (this.blastT <= 0) this.state = 'done'; }
+  }
+  hits(x, y, r) { return this.state === 'boom' && Math.hypot(x - this.x, y - this.y) < this.blastR + r; }
+  draw(c, time) {
+    if (this.state === 'done') return;
+    c.save(); c.translate(this.x, this.y);
+    if (this.state === 'boom') {
+      const a = clamp(this.blastT / 0.35, 0, 1);
+      c.globalAlpha = a; c.fillStyle = 'rgba(255,180,60,0.5)';
+      c.beginPath(); c.arc(0, 0, this.blastR * (1.4 - a * 0.4), 0, TAU); c.fill(); c.globalAlpha = 1;
+      c.restore(); return;
+    }
+    const armed = this.state === 'armed';
+    const lit = armed ? (Math.sin(this.blink * 24) > 0) : (Math.sin(this.blink * 3) > 0);
+    c.fillStyle = '#39404f'; c.beginPath(); c.arc(0, 0, 12, 0, TAU); c.fill();
+    for (let k = 0; k < 8; k++) { c.save(); c.rotate(k * TAU / 8); c.fillStyle = '#4a5163'; c.fillRect(10, -2, 6, 4); c.restore(); }
+    c.fillStyle = lit ? (armed ? '#ff4455' : '#ffcf3f') : '#5b2530';
+    if (lit) { c.shadowColor = armed ? '#ff4455' : '#ffcf3f'; c.shadowBlur = 12; }
+    c.beginPath(); c.arc(0, 0, 5, 0, TAU); c.fill(); c.shadowBlur = 0;
+    c.restore();
+  }
+}
+
+// Alien creature: a large body patrolling a line; deadly to touch, safe to avoid.
+class Creature {
+  constructor(h) {
+    this.type = 'creature';
+    this.bx = h.p[0]; this.by = h.p[1];
+    this.w = (h.w || 3) * CELL; this.h = (h.h || 2) * CELL;
+    this.axis = h.axis || 'x'; this.range = (h.range || 6) * CELL;
+    this.sp = h.sp || 0.5; this.ph = h.ph || 0; this.t = 0; this.x = this.bx; this.y = this.by;
+    this.hue = h.hue || 150;
+  }
+  update(dt) {
+    this.t += dt;
+    const off = this.range * 0.5 * (1 + Math.sin(this.t * this.sp * DIFF.haz + this.ph));
+    this.x = this.bx + (this.axis === 'x' || this.axis === 'd' ? off : 0);
+    this.y = this.by + (this.axis === 'y' || this.axis === 'd' ? off : 0);
+  }
+  hits(x, y, r) { return circleRect(x, y, r - 3, this.x + 4, this.y + 4, this.w - 8, this.h - 8); }
+  draw(c, time) {
+    const cx = this.x + this.w / 2, cy = this.y + this.h / 2;
+    c.save(); c.translate(cx, cy);
+    const wob = Math.sin(time * 3 + this.ph) * 3;
+    c.fillStyle = `hsl(${this.hue},55%,40%)`;
+    c.shadowColor = `hsl(${this.hue},70%,50%)`; c.shadowBlur = 12;
+    c.beginPath(); c.ellipse(0, 0, this.w / 2, this.h / 2 + wob, 0, 0, TAU); c.fill(); c.shadowBlur = 0;
+    // eyes
+    c.fillStyle = '#fff';
+    for (const ex of [-this.w * 0.16, this.w * 0.16]) { c.beginPath(); c.arc(ex, -this.h * 0.1, 6, 0, TAU); c.fill(); }
+    c.fillStyle = '#101018';
+    for (const ex of [-this.w * 0.16, this.w * 0.16]) { c.beginPath(); c.arc(ex + Math.sin(time * 2) * 2, -this.h * 0.1, 3, 0, TAU); c.fill(); }
+    // tentacles
+    c.strokeStyle = `hsl(${this.hue},55%,35%)`; c.lineWidth = 4; c.lineCap = 'round';
+    for (let k = -2; k <= 2; k++) {
+      c.beginPath(); c.moveTo(k * this.w * 0.16, this.h * 0.35);
+      c.lineTo(k * this.w * 0.16 + Math.sin(time * 4 + k) * 5, this.h * 0.55 + wob); c.stroke();
+    }
+    c.restore();
+  }
+}
+
+// Teleport gate pair: fly into one, pop out the other (short cooldown so you
+// don't ping-pong).
+class Teleport {
+  constructor(h) {
+    this.type = 'teleport';
+    this.a = h.a; this.b = h.b; this.r = 24; this.cool = 0;
+  }
+  update(dt, core) {
+    if (this.cool > 0) { this.cool -= dt; return; }
+    const ship = core.ship; if (ship.dead || ship.landed) return;
+    const port = (from, to) => { ship.x = to[0]; ship.y = to[1]; this.cool = 0.9; AudioSys.sfx.warp && AudioSys.sfx.warp();
+      for (let i = 0; i < 16; i++) { const ang = Math.random() * TAU; spawnParticle({ x: to[0], y: to[1], vx: Math.cos(ang) * 120, vy: Math.sin(ang) * 120, life: 0.4, maxLife: 0.4, size: 3, color: '#b98cff', glow: true, shrink: true }); } };
+    if (Math.hypot(ship.x - this.a[0], ship.y - this.a[1]) < this.r) port(this.a, this.b);
+    else if (Math.hypot(ship.x - this.b[0], ship.y - this.b[1]) < this.r) port(this.b, this.a);
+  }
+  hits() { return false; }
+  draw(c, time) {
+    for (const [gx, gy, hue] of [[this.a[0], this.a[1], 275], [this.b[0], this.b[1], 190]]) {
+      c.save(); c.translate(gx, gy); c.rotate(time * 1.5);
+      for (let k = 0; k < 3; k++) {
+        c.strokeStyle = `hsla(${hue},80%,65%,${0.7 - k * 0.2})`; c.lineWidth = 3;
+        c.beginPath(); c.ellipse(0, 0, this.r + 3, this.r * 0.5 + k * 4, k * 1.0, 0, TAU); c.stroke();
+      }
+      c.fillStyle = `hsla(${hue},80%,55%,0.35)`; c.beginPath(); c.arc(0, 0, this.r, 0, TAU); c.fill();
+      c.restore();
+    }
+  }
+}
+
 function buildHazard(h) {
   switch (h.t) {
     case 'laser': return new Beam(h, 'laser');
@@ -562,6 +873,14 @@ function buildHazard(h) {
     case 'fan': return new Fan(h);
     case 'mover': return new Mover(h);
     case 'rocks': return new RockSpawner(h);
+    case 'wind': return new Wind(h);
+    case 'magnet': return new Magnet(h);
+    case 'tractor': return new Tractor(h);
+    case 'blackhole': return new BlackHole(h);
+    case 'meteors': return new MeteorSpawner(h);
+    case 'mine': return new Mine(h);
+    case 'creature': return new Creature(h);
+    case 'teleport': return new Teleport(h);
   }
   return null;
 }
@@ -773,7 +1092,19 @@ class Ship {
       // settle angle toward level slowly when not rotating
       if (!rotating) this.angle *= 1 - 1.2 * dt;
     } else {
-      this.vx = 0; this.vy = 0;
+      // landed. Ice keeps you sliding (slow decel); conveyors drag you sideways;
+      // otherwise you're parked. If you slide off the pad edge, you drop.
+      const pad = this.landedPad;
+      if (pad && pad.ice && !thrusting) {
+        this.vx *= 1 - 1.6 * dt; this.vy = 0; this.x += this.vx * dt;
+      } else if (pad && pad.conveyor && !thrusting) {
+        this.vx = pad.conveyor; this.vy = 0; this.x += this.vx * dt;
+      } else {
+        this.vx = 0; this.vy = 0;
+      }
+      if (pad && (pad.ice || pad.conveyor) && (this.x < pad.x + 6 || this.x > pad.x + pad.w - 6)) {
+        this.landed = false; this.landedPad = null; // slid off the edge
+      }
       this.angle *= 1 - 8 * dt;
     }
   }
@@ -845,15 +1176,42 @@ class Ship {
   }
 }
 
+/* ============================== campaigns ============================== */
+// Two level sets. The original is "Cosmo Cab"; "Outer Rim" is a harder second
+// campaign built on a whole new hazard suite (force fields, moving/collapsing/
+// ice pads, meteors, mines, teleport gates, black holes, ...).
+// CAMPAIGNS + OUTER_LEVELS come from levels.js.
+function campaignCount() { return typeof CAMPAIGNS !== 'undefined' ? CAMPAIGNS.length : 1; }
+function campaignLevels(ci) {
+  if (typeof CAMPAIGNS !== 'undefined') return CAMPAIGNS[ci].levels;
+  return LEVELS; // fallback if levels.js predates campaigns
+}
+function campaignId(ci) { return typeof CAMPAIGNS !== 'undefined' ? CAMPAIGNS[ci].id : 'cosmo'; }
+function campaignName(ci) { return typeof CAMPAIGNS !== 'undefined' ? CAMPAIGNS[ci].name : 'COSMO CAB'; }
+// per-campaign unlock progress, migrating the old single number if present
+function ensureUnlockObj() {
+  if (typeof save.unlocked === 'number') save.unlocked = { cosmo: save.unlocked };
+  else if (!save.unlocked || typeof save.unlocked !== 'object') save.unlocked = {};
+}
+function unlockedIn(ci) { ensureUnlockObj(); return save.unlocked[campaignId(ci)] || 1; }
+function setUnlocked(ci, n) {
+  ensureUnlockObj();
+  const id = campaignId(ci);
+  save.unlocked[id] = Math.max(save.unlocked[id] || 1, n);
+}
+
 /* ================================ game ================================ */
-const ST = { MENU: 0, LEVELS: 1, SCORES: 2, SETTINGS: 3, GAME: 4 };
+const ST = { MENU: 0, LEVELS: 1, SCORES: 2, SETTINGS: 3, GAME: 4, COSMOS: 5 };
 let state = ST.MENU;
 let menuIndex = 0;
 let settingsIndex = 0;
 let levelSelIndex = 0;
+let levelSelCampaign = 0; // which cosmos (campaign) the level grid is showing
+let cosmosIndex = 0;      // selection on the cosmos-picker screen
 let settingsReturn = ST.MENU;
 
 const G = {
+  campaign: 0,        // active campaign index
   levelIndex: 0,
   level: null,
   ship: null,
@@ -885,10 +1243,12 @@ const G = {
     this.msg = text; this.msgT = dur || 2;
   },
 
-  startLevel(idx) {
+  startLevel(idx, campaign) {
+    if (campaign !== undefined) this.campaign = campaign;
     this.levelIndex = idx;
-    this.level = parseLevel(LEVELS[idx]);
+    this.level = parseLevel(campaignLevels(this.campaign)[idx]);
     this.ship = new Ship(this.level.spawn.x, this.level.spawn.y);
+    this.ship.fuel = this.level.startFuel; // fuel-challenge levels start low
     this.hazardObjs = this.level.hazards.map(buildHazard).filter(Boolean);
     this.fareIndex = 0;
     this.levelScore = 0;
@@ -1097,8 +1457,8 @@ const G = {
     this.levelScore = fuelBonus;
     AudioSys.setEngine(0, false);
     AudioSys.sfx.bonus();
-    if (this.levelIndex + 1 < LEVELS.length) {
-      save.unlocked = Math.max(save.unlocked, this.levelIndex + 2);
+    if (this.levelIndex + 1 < campaignLevels(this.campaign).length) {
+      setUnlocked(this.campaign, this.levelIndex + 2);
       persist();
     }
   },
@@ -1125,10 +1485,42 @@ const G = {
 
   saveScore() {
     if (this.score <= 0) return;
-    save.highscores.push({ score: this.score, level: this.levelIndex + 1, date: new Date().toISOString().slice(0, 10) });
+    save.highscores.push({ score: this.score, level: this.levelIndex + 1, campaign: campaignName(this.campaign), date: new Date().toISOString().slice(0, 10) });
     save.highscores.sort((a, b) => b.score - a.score);
     save.highscores = save.highscores.slice(0, 10);
     persist();
+  },
+
+  // Moving / collapsing platforms. Moving pads carry the parked cab and any
+  // waiting fare; collapsing pads vanish a few seconds after you land.
+  updatePads(dt) {
+    const ship = this.ship, pass = this.passenger;
+    for (const pad of this.level.pads) {
+      if (pad.gone) continue;
+      if (pad.move) {
+        const mv = pad.move;
+        // accel: speed ramps up over time; stop: dwell at the ends (clip the wave)
+        mv.t += dt * (1 + (mv.accel || 0) * mv.t * 0.03);
+        let s = Math.sin(mv.t * mv.sp + mv.ph);
+        if (mv.stop) s = clamp(s * (1 + mv.stop), -1, 1);
+        const off = mv.range * 0.5 * (1 + s);
+        const nx = pad.baseX + (mv.axis === 'x' || mv.axis === 'd' ? off : 0);
+        const ny = pad.baseY + (mv.axis === 'y' || mv.axis === 'd' ? off : 0);
+        const ddx = nx - pad.x, ddy = ny - pad.y;
+        pad.x = nx; pad.y = ny;
+        if (ship.landed && ship.landedPad === pad) { ship.x += ddx; ship.y += ddy; }
+        if (pass && pass.pad === pad && (pass.state === 'waiting' || pass.state === 'walking' || pass.state === 'exiting')) {
+          pass.x += ddx; pass.y = pad.y;
+        }
+      }
+      if (pad.collapse && pad.collapseT !== undefined && pad.collapseT > 0) {
+        pad.collapseT -= dt;
+        if (pad.collapseT <= 0) {
+          pad.gone = true;
+          if (ship.landedPad === pad) { ship.landed = false; ship.landedPad = null; }
+        }
+      }
+    }
   },
 
   update(dt) {
@@ -1163,6 +1555,15 @@ const G = {
     const ship = this.ship;
     const wasLanded = ship.landed;
     ship.update(dt, this);
+    // force fields (wind / magnets / tractor beams / black holes) push the cab
+    for (const h of this.hazardObjs) if (h.force) h.force(ship, dt);
+    // sandstorm: a global wind that drifts and swings direction over time
+    if (this.level.sandstorm && !ship.landed && !ship.dead) {
+      const a = Math.sin(this.time * 0.35) * 1.4;
+      ship.vx += Math.cos(a) * 95 * DIFF.haz * dt;
+      ship.vy += Math.sin(a) * 45 * DIFF.haz * dt;
+    }
+    this.updatePads(dt);
     this.fareTimer += dt;
     if (this.pendingFare > 0) {
       this.pendingFare -= dt;
@@ -1191,6 +1592,7 @@ const G = {
       const [sl, sr] = ship.skids();
       let handled = false;
       for (const pad of this.level.pads) {
+        if (pad.gone) continue; // collapsed platform — nothing to land on
         const top = pad.y;
         const inX = sl.x > pad.x - 2 && sr.x < pad.x + pad.w + 2;
         const nearTop = Math.max(sl.y, sr.y) > top - 4 && Math.max(sl.y, sr.y) < top + 14;
@@ -1206,7 +1608,10 @@ const G = {
             const rehop = pad === ship.tookOffFrom && ship.airTime < 1.5;
             // the board-start descent onto the spawn pad isn't an earned landing
             const spawnDrop = ship.tookOffFrom === null;
-            ship.vx = 0; ship.vy = 0;
+            // ice keeps horizontal momentum (you slide); everything else stops dead
+            if (pad.ice) ship.vy = 0; else { ship.vx = 0; ship.vy = 0; }
+            // collapsing pad starts its countdown the moment you touch down
+            if (pad.collapse && pad.collapseT === undefined) pad.collapseT = pad.collapse;
             AudioSys.sfx.land();
             if (smooth && !rehop && !spawnDrop) {
               this.score += 50;
@@ -1236,6 +1641,7 @@ const G = {
           }
         }
         for (const pad of this.level.pads) {
+          if (pad.gone) continue;
           if (circleRect(ship.x, ship.y, SHIP_R - 2, pad.x, pad.y + 6, pad.w, pad.h - 6)) { this.crash('CRASHED!'); return; }
         }
         if (inGate) {
@@ -1257,7 +1663,15 @@ const G = {
     for (const h of this.hazardObjs) {
       if (h.hits(ship.x, ship.y, SHIP_R)) {
         if (h instanceof Beam) AudioSys.sfx.zap();
-        this.crash(h instanceof Beam ? 'ZAPPED!' : h instanceof Fan ? 'SHREDDED!' : h instanceof RockSpawner ? 'SQUASHED BY A ROCK!' : 'CRUSHED!');
+        const reason =
+          h instanceof Beam ? 'ZAPPED!' :
+          h instanceof Fan ? 'SHREDDED!' :
+          h instanceof RockSpawner ? 'SQUASHED BY A ROCK!' :
+          h instanceof MeteorSpawner ? 'METEOR STRIKE!' :
+          h instanceof BlackHole ? 'SPAGHETTIFIED!' :
+          h instanceof Mine ? 'MINED!' :
+          h instanceof Creature ? 'EATEN ALIVE!' : 'CRUSHED!';
+        this.crash(reason);
         return;
       }
     }
@@ -1348,7 +1762,7 @@ function handleGameInput() {
     }
   } else if (G.sub === 'complete') {
     if (enterPressed && G.completeT > 0.8) {
-      if (G.levelIndex + 1 < LEVELS.length) {
+      if (G.levelIndex + 1 < campaignLevels(G.campaign).length) {
         G.startLevel(G.levelIndex + 1);
       } else {
         G.sub = 'winall';
@@ -1364,7 +1778,7 @@ function handleGameInput() {
 }
 
 /* ========================= menu definitions ========================= */
-const MAIN_ITEMS = ['START GAME', 'LEVEL SELECT', 'HIGH SCORES', 'SETTINGS', 'EXIT'];
+const MAIN_ITEMS = ['WORLD/LEVEL SELECT', 'HIGH SCORES', 'SETTINGS', 'EXIT'];
 
 // Rate-limit menu navigation so no input source can spam it faster than ~7/s.
 // Starts at -Infinity so the very first input after page load is never eaten.
@@ -1419,22 +1833,28 @@ function handleMenuInput() {
     if (enterP) {
       AudioSys.sfx.menuSelect();
       switch (menuIndex) {
-        case 0: G.score = 0; G.startLevel(0); break;
-        case 1: levelSelIndex = 0; state = ST.LEVELS; break;
-        case 2: state = ST.SCORES; break;
-        case 3: settingsReturn = ST.MENU; settingsIndex = 0; state = ST.SETTINGS; break;
-        case 4: window.close(); break;
+        case 0: cosmosIndex = G.campaign; state = ST.COSMOS; break;
+        case 1: state = ST.SCORES; break;
+        case 2: settingsReturn = ST.MENU; settingsIndex = 0; state = ST.SETTINGS; break;
+        case 3: requestExit(); break;
       }
     }
+  } else if (state === ST.COSMOS) {
+    // pick which cosmos (campaign) to fly, then drop into its level grid
+    const n = campaignCount();
+    if (upP && nav) { cosmosIndex = (cosmosIndex + n - 1) % n; AudioSys.sfx.menuMove(); }
+    if (downP && nav) { cosmosIndex = (cosmosIndex + 1) % n; AudioSys.sfx.menuMove(); }
+    if (enterP) { AudioSys.sfx.menuSelect(); levelSelCampaign = cosmosIndex; levelSelIndex = 0; state = ST.LEVELS; }
+    if (escP) state = ST.MENU;
   } else if (state === ST.LEVELS) {
     const cols = 6;
-    const max = Math.min(save.unlocked, LEVELS.length);
+    const max = Math.min(unlockedIn(levelSelCampaign), campaignLevels(levelSelCampaign).length);
     if (leftP && nav) { levelSelIndex = Math.max(0, levelSelIndex - 1); AudioSys.sfx.menuMove(); }
     if (rightP && nav) { levelSelIndex = Math.min(max - 1, levelSelIndex + 1); AudioSys.sfx.menuMove(); }
     if (upP && nav) { levelSelIndex = Math.max(0, levelSelIndex - cols); AudioSys.sfx.menuMove(); }
     if (downP && nav) { levelSelIndex = Math.min(max - 1, levelSelIndex + cols); AudioSys.sfx.menuMove(); }
-    if (enterP) { AudioSys.sfx.menuSelect(); G.score = 0; G.startLevel(levelSelIndex); }
-    if (escP) state = ST.MENU;
+    if (enterP) { AudioSys.sfx.menuSelect(); G.score = 0; G.startLevel(levelSelIndex, levelSelCampaign); }
+    if (escP) state = campaignCount() > 1 ? ST.COSMOS : ST.MENU;
   } else if (state === ST.SCORES) {
     if (enterP || escP) state = ST.MENU;
   } else if (state === ST.SETTINGS) {
@@ -1456,7 +1876,8 @@ function handleMenuInput() {
 
 /* ============================== rendering ============================== */
 function themeFor(idx) {
-  return THEMES[LEVELS[idx] && LEVELS[idx].theme] || THEMES.training;
+  const lv = campaignLevels(G.campaign)[idx];
+  return THEMES[lv && lv.theme] || THEMES.training;
 }
 
 // Theme ambience: lightweight screen-space particles, fully stateless
@@ -1661,15 +2082,35 @@ function drawExitGate(c, gate, theme, time) {
 
 function drawPads(c, level, time, activePassenger, ship) {
   for (const pad of level.pads) {
-    // platform body
+    if (pad.gone) continue; // collapsed platform
+    c.save();
+    // a collapsing pad shakes and fades in its final second
+    if (pad.collapse && pad.collapseT !== undefined && pad.collapseT > 0) {
+      c.globalAlpha = clamp(0.35 + pad.collapseT / pad.collapse, 0, 1);
+      if (pad.collapseT < 1) c.translate((Math.random() - 0.5) * 3, (Math.random() - 0.5) * 3);
+    }
+    // platform body (ice pads read cold/blue)
     const g = c.createLinearGradient(pad.x, pad.y, pad.x, pad.y + pad.h);
-    g.addColorStop(0, '#4d5568'); g.addColorStop(1, '#2c3140');
+    if (pad.ice) { g.addColorStop(0, '#8fd0e8'); g.addColorStop(1, '#3c6a86'); }
+    else { g.addColorStop(0, '#4d5568'); g.addColorStop(1, '#2c3140'); }
     c.fillStyle = g;
     roundRect(c, pad.x, pad.y, pad.w, pad.h, 5); c.fill();
 
     // landing surface
-    c.fillStyle = '#788299';
+    c.fillStyle = pad.ice ? '#dff2ff' : '#788299';
     c.fillRect(pad.x + 2, pad.y, pad.w - 4, 4);
+
+    // conveyor arrows show the drift direction
+    if (pad.conveyor) {
+      c.fillStyle = 'rgba(255,207,63,0.8)';
+      const dir = Math.sign(pad.conveyor), off = (time * 40) % 24;
+      for (let ax = pad.x + 6; ax < pad.x + pad.w - 6; ax += 24) {
+        const bx = ax + (dir > 0 ? off : -off);
+        c.beginPath();
+        c.moveTo(bx, pad.y + 3); c.lineTo(bx + dir * 7, pad.y + 7); c.lineTo(bx, pad.y + 11);
+        c.closePath(); c.fill();
+      }
+    }
 
     // hazard stripes on edge
     c.save();
@@ -1703,6 +2144,7 @@ function drawPads(c, level, time, activePassenger, ship) {
     if (isDest) { c.shadowColor = '#7cff9a'; c.shadowBlur = 8; }
     c.fillText(pad.label, pad.x + pad.w / 2, pad.y + 26);
     c.shadowBlur = 0;
+    c.restore();
   }
 }
 
@@ -1954,11 +2396,46 @@ function drawGame(c, time) {
   if (G.level.dark && !G.ship.dead) {
     c.save();
     c.globalCompositeOperation = 'multiply';
-    const lg = c.createRadialGradient(G.ship.x, G.ship.y, 60, G.ship.x, G.ship.y, 380);
+    // A tight pool of light around the cab; everything beyond ~190px falls to
+    // near-black, so you can only see a reasonable distance from the ship.
+    const R = 190;
+    const lg = c.createRadialGradient(G.ship.x, G.ship.y, 34, G.ship.x, G.ship.y, R);
     lg.addColorStop(0, 'rgba(255,255,255,1)');
-    lg.addColorStop(1, 'rgba(70,80,110,1)');
+    lg.addColorStop(0.5, 'rgba(120,128,150,1)');
+    lg.addColorStop(0.82, 'rgba(24,28,40,1)');
+    lg.addColorStop(1, 'rgba(3,4,8,1)');
     c.fillStyle = lg;
     c.fillRect(G.cam.x - 20, G.cam.y - 20, VIEW_W + 40, VIEW_H + 40);
+    c.restore();
+
+    // faint forward "headlight" cone so the direction you point reads a bit farther
+    c.save();
+    c.globalCompositeOperation = 'lighter';
+    c.translate(G.ship.x, G.ship.y);
+    c.rotate(G.ship.angle);
+    const cone = c.createLinearGradient(0, 0, 0, -230);
+    cone.addColorStop(0, 'rgba(150,170,210,0.16)');
+    cone.addColorStop(1, 'rgba(150,170,210,0)');
+    c.fillStyle = cone;
+    c.beginPath(); c.moveTo(-10, 0); c.lineTo(-70, -230); c.lineTo(70, -230); c.lineTo(10, 0); c.closePath(); c.fill();
+    c.restore();
+  }
+
+  // sandstorm: haze that thins near the cab, plus streaking sand
+  if (G.level.sandstorm && !G.ship.dead) {
+    c.save();
+    const sg = c.createRadialGradient(G.ship.x, G.ship.y, 90, G.ship.x, G.ship.y, 340);
+    sg.addColorStop(0, 'rgba(200,160,90,0)');
+    sg.addColorStop(1, 'rgba(190,150,85,0.55)');
+    c.fillStyle = sg;
+    c.fillRect(G.cam.x - 20, G.cam.y - 20, VIEW_W + 40, VIEW_H + 40);
+    c.strokeStyle = 'rgba(220,190,120,0.35)'; c.lineWidth = 2;
+    const drift = Math.cos(Math.sin(time * 0.35) * 1.4);
+    for (let i = 0; i < 40; i++) {
+      const x = G.cam.x + ((i * 137 + time * 320) % (VIEW_W + 40)) - 20;
+      const y = G.cam.y + ((i * 83) % VIEW_H);
+      c.beginPath(); c.moveTo(x, y); c.lineTo(x - drift * 26, y - 4); c.stroke();
+    }
     c.restore();
   }
 
@@ -1994,7 +2471,7 @@ function drawGame(c, time) {
       { text: 'LEVEL COMPLETE!', font: 'bold 44px "Segoe UI", sans-serif', color: '#7cff9a', glow: true, gap: 60 },
       { text: `FUEL BONUS +${G.levelScore}`, color: '#aaffcc', gap: 46 },
       { text: `SCORE ${G.score}`, color: '#ffffff', gap: 66 },
-      { text: G.levelIndex + 1 < LEVELS.length ? 'PRESS Ⓐ FOR NEXT FARE' : 'PRESS Ⓐ', color: '#9fb4d8', font: '18px "Segoe UI", sans-serif' },
+      { text: G.levelIndex + 1 < campaignLevels(G.campaign).length ? 'PRESS Ⓐ FOR NEXT FARE' : 'PRESS Ⓐ', color: '#9fb4d8', font: '18px "Segoe UI", sans-serif' },
     ]);
   } else if (G.sub === 'winall') {
     drawCenteredOverlay(c, [
@@ -2056,10 +2533,68 @@ function drawMenu(c, time) {
     }
     y += 56;
   });
+  drawNewWorldBanner(c, time);
   c.font = '14px "Segoe UI", sans-serif';
   c.fillStyle = '#5b667f';
   c.fillText('Ⓐ THRUST · STICK / D-PAD ROTATE · Ⓧ HORN · MENU PAUSE · Ⓨ RESTART', VIEW_W / 2, VIEW_H - TV_Y - 30);
   c.fillText('D-PAD TO NAVIGATE · Ⓐ TO SELECT', VIEW_W / 2, VIEW_H - TV_Y - 10);
+}
+
+// "New world" promo pill advertising the Outer Rim cosmos on the main menu.
+// Only shows once a second cosmos actually exists.
+function drawNewWorldBanner(c, time) {
+  if (campaignCount() < 2) return;
+  const outer = CAMPAIGNS[1];
+  const nLevels = outer.levels.length;
+  const cx = VIEW_W / 2, cy = 588;
+  const w = 560, h = 70, x = cx - w / 2, yy = cy - h / 2;
+  const pulse = 0.5 + 0.5 * Math.sin(time * 2.4);
+
+  c.save();
+  c.textAlign = 'left';
+  // glowing pill
+  c.shadowColor = 'rgba(210,110,255,0.9)'; c.shadowBlur = 16 + 12 * pulse;
+  const g = c.createLinearGradient(x, 0, x + w, 0);
+  g.addColorStop(0, 'rgba(78,34,120,0.95)');
+  g.addColorStop(1, 'rgba(150,44,110,0.95)');
+  c.fillStyle = g;
+  roundRect(c, x, yy, w, h, 18); c.fill();
+  c.shadowBlur = 0;
+  c.lineWidth = 2; c.strokeStyle = `rgba(255,200,255,${0.5 + 0.4 * pulse})`;
+  roundRect(c, x, yy, w, h, 18); c.stroke();
+
+  // "NEW" starburst badge on the left
+  const bx = x + 52, by = cy;
+  c.save(); c.translate(bx, by); c.rotate(time * 0.6);
+  c.fillStyle = '#ffcf3f'; c.shadowColor = '#ffcf3f'; c.shadowBlur = 10;
+  c.beginPath();
+  for (let i = 0; i < 12; i++) {
+    const a = i * TAU / 12, rr = i % 2 ? 16 : 26;
+    c[i ? 'lineTo' : 'moveTo'](Math.cos(a) * rr, Math.sin(a) * rr);
+  }
+  c.closePath(); c.fill(); c.restore();
+  c.fillStyle = '#3a1030'; c.font = 'bold 13px "Segoe UI", sans-serif';
+  c.textAlign = 'center';
+  c.fillText('NEW', bx, by + 4);
+
+  // headline + subline
+  c.textAlign = 'left';
+  const tx = x + 96;
+  c.fillStyle = '#ffffff';
+  c.font = 'bold 24px "Segoe UI", sans-serif';
+  c.shadowColor = 'rgba(255,140,220,0.8)'; c.shadowBlur = 8;
+  c.fillText('NEW WORLD:  ' + outer.name, tx, cy - 6);
+  c.shadowBlur = 0;
+  c.fillStyle = '#ffd6f2';
+  c.font = '600 14px "Segoe UI", sans-serif';
+  c.fillText(nLevels + ' NEW LEVELS · BLACK HOLES, WIND, MINES & MORE', tx, cy + 17);
+
+  // little "▸ LEVEL SELECT" nudge on the far right
+  c.textAlign = 'right';
+  c.fillStyle = `rgba(255,255,255,${0.55 + 0.35 * pulse})`;
+  c.font = '600 13px "Segoe UI", sans-serif';
+  c.fillText('▸ LEVEL SELECT', x + w - 20, cy + 4);
+  c.restore();
 }
 
 function drawLevelSelect(c, time) {
@@ -2068,31 +2603,73 @@ function drawLevelSelect(c, time) {
   c.font = 'bold 40px "Segoe UI", sans-serif';
   c.fillStyle = '#ffcf3f';
   c.shadowColor = '#ffcf3f'; c.shadowBlur = 16;
-  c.fillText('LEVEL SELECT', VIEW_W / 2, 90);
+  c.fillText('LEVEL SELECT', VIEW_W / 2, 74);
   c.shadowBlur = 0;
 
-  const cols = 6, cw = 150, chh = 88;
+  // which cosmos these levels belong to
+  const levels = campaignLevels(levelSelCampaign);
+  const unlockedMax = unlockedIn(levelSelCampaign);
+  c.font = '600 22px "Segoe UI", sans-serif';
+  c.fillStyle = '#c9d4ea';
+  c.fillText(campaignName(levelSelCampaign), VIEW_W / 2, 108);
+
+  const cols = 6, cw = 150, chh = 82;
   const ox = VIEW_W / 2 - cols * cw / 2 + cw / 2;
-  for (let i = 0; i < LEVELS.length; i++) {
+  for (let i = 0; i < levels.length; i++) {
     const col = i % cols, row = (i / cols) | 0;
-    const x = ox + col * cw, y = 170 + row * chh;
-    const unlocked = i < save.unlocked;
+    const x = ox + col * cw, y = 168 + row * chh;
+    const unlocked = i < unlockedMax;
     const sel = i === levelSelIndex;
     c.fillStyle = sel ? 'rgba(255, 207, 63, 0.18)' : 'rgba(12, 18, 32, 0.7)';
-    roundRect(c, x - 64, y - 26, 128, 68, 10); c.fill();
+    roundRect(c, x - 64, y - 26, 128, 64, 10); c.fill();
     c.strokeStyle = sel ? '#ffcf3f' : unlocked ? 'rgba(120,150,210,0.4)' : 'rgba(80,90,110,0.3)';
     c.lineWidth = sel ? 2 : 1;
-    roundRect(c, x - 64, y - 26, 128, 68, 10); c.stroke();
+    roundRect(c, x - 64, y - 26, 128, 64, 10); c.stroke();
     c.fillStyle = unlocked ? (sel ? '#ffffff' : '#c9d4ea') : '#4a5163';
     c.font = 'bold 22px "Segoe UI", sans-serif';
     c.fillText(unlocked ? String(i + 1) : '🔒', x, y + 2);
     c.font = '11px "Segoe UI", sans-serif';
     c.fillStyle = unlocked ? '#8b98b8' : '#3c4356';
-    c.fillText(unlocked ? LEVELS[i].name.toUpperCase() : 'LOCKED', x, y + 26);
+    c.fillText(unlocked ? levels[i].name.toUpperCase() : 'LOCKED', x, y + 24);
   }
   c.font = '15px "Segoe UI", sans-serif';
   c.fillStyle = '#5b667f';
-  c.fillText('Ⓐ PLAY · Ⓑ BACK', VIEW_W / 2, VIEW_H - TV_Y - 10);
+  const hint = campaignCount() > 1 ? 'Ⓐ PLAY · Ⓑ CHANGE COSMOS' : 'Ⓐ PLAY · Ⓑ BACK';
+  c.fillText(hint, VIEW_W / 2, VIEW_H - TV_Y - 10);
+}
+
+// Cosmos picker: choose which world (campaign) before its level grid.
+function drawCosmosSelect(c, time) {
+  drawMenuBackdrop(c, time);
+  c.textAlign = 'center';
+  c.font = 'bold 40px "Segoe UI", sans-serif';
+  c.fillStyle = '#ffcf3f';
+  c.shadowColor = '#ffcf3f'; c.shadowBlur = 16;
+  c.fillText('SELECT COSMOS', VIEW_W / 2, 120);
+  c.shadowBlur = 0;
+
+  const n = campaignCount();
+  const y0 = 250, gap = Math.min(120, (VIEW_H - 360) / Math.max(1, n));
+  for (let i = 0; i < n; i++) {
+    const sel = i === cosmosIndex;
+    const y = y0 + i * gap;
+    const done = unlockedIn(i) - 1, total = campaignLevels(i).length;
+    c.fillStyle = sel ? 'rgba(255,207,63,0.16)' : 'rgba(12,18,32,0.7)';
+    roundRect(c, VIEW_W / 2 - 300, y - 36, 600, 72, 12); c.fill();
+    c.strokeStyle = sel ? '#ffcf3f' : 'rgba(120,150,210,0.35)'; c.lineWidth = sel ? 2 : 1;
+    roundRect(c, VIEW_W / 2 - 300, y - 36, 600, 72, 12); c.stroke();
+    c.font = 'bold 30px "Segoe UI", sans-serif';
+    c.fillStyle = sel ? '#ffffff' : '#c9d4ea';
+    if (sel) { c.shadowColor = '#ffcf3f'; c.shadowBlur = 10; }
+    c.fillText((sel ? '▸ ' : '') + campaignName(i) + (sel ? ' ◂' : ''), VIEW_W / 2, y - 2);
+    c.shadowBlur = 0;
+    c.font = '14px "Segoe UI", sans-serif';
+    c.fillStyle = '#8b98b8';
+    c.fillText(clamp(done, 0, total) + ' / ' + total + ' CLEARED', VIEW_W / 2, y + 22);
+  }
+  c.font = '15px "Segoe UI", sans-serif';
+  c.fillStyle = '#5b667f';
+  c.fillText('Ⓐ SELECT · Ⓑ BACK', VIEW_W / 2, VIEW_H - TV_Y - 10);
 }
 
 function drawScores(c, time) {
@@ -2221,6 +2798,7 @@ function frame(now) {
 
   switch (state) {
     case ST.MENU: drawMenu(ctx, time); break;
+    case ST.COSMOS: drawCosmosSelect(ctx, time); break;
     case ST.LEVELS: drawLevelSelect(ctx, time); break;
     case ST.SCORES: drawScores(ctx, time); break;
     case ST.SETTINGS: drawSettings(ctx, time); break;
@@ -2239,13 +2817,20 @@ AudioSys.setVolumes(save.settings);
 try { AudioSys.init(); } catch (e) { /* audio unavailable */ }
 window.addEventListener('pointerdown', () => AudioSys.init());
 
-// debug/testing: ?level=N jumps straight into board N; &exit=1 opens the exit gate
+// debug/testing: ?cosmo=N&level=M jumps into cosmos N (1-indexed), level M
+// (1-indexed). e.g. ?cosmo=2&level=3 = Outer Rim board 3. (&camp=0|1 is the
+// legacy 0-indexed form.) &play=1 skips the intro, &exit=1 opens the exit gate.
 {
   const m = typeof location !== 'undefined' && location.search.match(/level=(\d+)/);
   if (m) {
-    const idx = clamp(parseInt(m[1], 10) - 1, 0, LEVELS.length - 1);
+    const cm = location.search.match(/cosmo=(\d+)/);
+    const km = location.search.match(/camp=(\d+)/);
+    const ci = cm ? clamp(parseInt(cm[1], 10) - 1, 0, campaignCount() - 1)
+             : km ? clamp(parseInt(km[1], 10), 0, campaignCount() - 1) : 0;
+    const idx = clamp(parseInt(m[1], 10) - 1, 0, campaignLevels(ci).length - 1);
     G.score = 0;
-    G.startLevel(idx);
+    G.startLevel(idx, ci);
+    if (/play=1/.test(location.search)) { G.sub = 'play'; G.introT = 99; }
     const ex = location.search.match(/exit=(1|up|down|left|right)/);
     if (ex) {
       G.sub = 'play';

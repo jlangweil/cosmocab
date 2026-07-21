@@ -230,7 +230,15 @@ namespace CosmoCab
 
             JsonObject msg;
             if (!JsonObject.TryParse(raw, out msg)) return;
-            if (msg.GetNamedString("t", "") != "say") return;
+
+            var kind = msg.GetNamedString("t", "");
+            if (kind == "exit")
+            {
+                // EXIT menu item: close the app back to the Xbox dashboard.
+                Application.Current.Exit();
+                return;
+            }
+            if (kind != "say") return;
 
             var text = msg.GetNamedString("text", "");
             if (text.Length == 0 || text.Length > 80) return;

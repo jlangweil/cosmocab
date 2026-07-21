@@ -27,6 +27,15 @@ const THEMES = {
   resort:    { name: 'LUXURY RESORT',      bgTop: '#1c0f2e', bgBot: '#8a3a55', wallH: 190, wallS: 35, planetH: 320, accent: '#ffd166', deco: null },
   carnival:  { name: 'SPACE CARNIVAL',     bgTop: '#160b26', bgBot: '#3d1a54', wallH: 290, wallS: 35, planetH: 310, accent: '#ff7ad9', deco: 'confetti' },
   megacity:  { name: 'MEGACITY',           bgTop: '#060912', bgBot: '#141d3a', wallH: 225, wallS: 28, planetH: 200, accent: '#66e0ff', deco: null },
+  // ---- Outer Rim campaign themes ----
+  nebula:    { name: 'CRIMSON NEBULA',     bgTop: '#1a0812', bgBot: '#521431', wallH: 330, wallS: 30, planetH: 340, accent: '#ff7ab0', deco: null, starBoost: true },
+  asteroid:  { name: 'ASTEROID BELT',      bgTop: '#0e0b08', bgBot: '#2c2418', wallH: 30,  wallS: 22, planetH: 30,  accent: '#d8b98a', deco: 'dust' },
+  magnetar:  { name: 'MAGNETAR FIELD',     bgTop: '#050814', bgBot: '#101a3a', wallH: 220, wallS: 40, planetH: 230, accent: '#6aa8ff', deco: 'sparks', starBoost: true },
+  wormhole:  { name: 'WORMHOLE RELAY',     bgTop: '#07131a', bgBot: '#123842', wallH: 180, wallS: 35, planetH: 190, accent: '#5cf0e0', deco: null, starBoost: true },
+  singularity:{name: 'THE SINGULARITY',    bgTop: '#04030a', bgBot: '#160a24', wallH: 275, wallS: 30, planetH: 285, accent: '#c08cff', deco: null, starBoost: true },
+  desert:    { name: 'DUST WORLD',         bgTop: '#1c1206', bgBot: '#5a3d1a', wallH: 34,  wallS: 40, planetH: 32,  accent: '#ffcf7a', deco: 'dust' },
+  hive:      { name: 'ALIEN HIVE',         bgTop: '#06140c', bgBot: '#123a22', wallH: 135, wallS: 38, planetH: 130, accent: '#8dff7a', deco: 'spores' },
+  reactor:   { name: 'REACTOR RIM',        bgTop: '#0a0d10', bgBot: '#22302c', wallH: 165, wallS: 30, planetH: 160, accent: '#ffd23f', deco: 'embers' },
 };
 
 const LEVELS = [
@@ -1024,4 +1033,200 @@ const LEVELS = [
 
 ];
 
-if (typeof module !== 'undefined') module.exports = { LEVELS, THEMES };
+/* ======================================================================== *
+ *  OUTER RIM  — 30-level second campaign built on a new hazard suite.
+ *  New hazard types (map-cell coords, parser adds the border offset):
+ *    wind:    {t:'wind', p:[x,y], w, h, fx, fy, gust?}   push zone (px/s^2)
+ *    magnet:  {t:'magnet', c:[x,y], r, mode:'pull'|'push', str}
+ *    tractor: {t:'tractor', c:[x,y], r, str}             escapable pull
+ *    blackhole:{t:'blackhole', c:[x,y], r}               fatal core
+ *    meteors: {t:'meteors', x0, x1, iv, ang?}            diagonal strikes
+ *    mine:    {t:'mine', c:[x,y], r?}                     proximity + blast
+ *    creature:{t:'creature', p:[x,y], w, h, axis, range, sp, hue?}
+ *    teleport:{t:'teleport', a:[x,y], b:[x,y]}
+ *  Pad modifiers via padMods keyed by label:
+ *    { B:{ move:{axis:'x'|'y'|'d', range, sp, ph?, stop?, accel?} },
+ *      C:{ ice:true }, D:{ conveyor:80 }, E:{ collapse:3 } }
+ *  Level flags: theme, dark, sandstorm, fuel (start fuel).
+ * ======================================================================== */
+const OUTER_LEVELS = [
+
+// 1: DRIFTING DOCKS — gentle moving platform
+{ name: 'Drifting Docks', theme: 'wormhole', fares: ['A>B', 'B>A'],
+  padMods: { B: { move: { axis: 'x', range: 8, sp: 0.5 } } },
+  map: ['', '', '', '............BBBB', '', '', '', '', '', '', '', '....S', '...AAAA', '', ''],
+  hazards: [] },
+
+// 2: CROSSWIND — a fan zone shoves you sideways
+{ name: 'Crosswind', theme: 'desert', fares: ['A>B', 'B>C', 'C>A'],
+  map: ['', '', '.................BBBB', '', '', '', '', '', '', '', '', '....S', '...AAAA.................CCCC', '', ''],
+  hazards: [{ t: 'wind', p: [8, 4], w: 12, h: 7, fx: 150, fy: 0, gust: 1.2 }] },
+
+// 3: VERTICAL LIFT — platform rides up and down
+{ name: 'Vertical Lift', theme: 'wormhole', fares: ['A>B', 'B>C', 'C>A'],
+  padMods: { B: { move: { axis: 'y', range: 7, sp: 0.7 } } },
+  map: ['', '', '', '.................BBBB', '', '', '', '', '', '', '', '', '....S', '...AAAA................CCCC', '', ''],
+  hazards: [] },
+
+// 4: MAGNET TEST — a blue zone pulls you in
+{ name: 'Magnet Test', theme: 'magnetar', fares: ['A>B', 'B>C', 'C>A'],
+  map: ['', '', '......BBBB.................CCCC', '', '', '', '', '', '', '', '', '', '.........S', '........AAAA', '', ''],
+  hazards: [{ t: 'magnet', c: [18, 8], r: 6, mode: 'pull', str: 260 }] },
+
+// 5: REPULSOR — a red zone shoves you away
+{ name: 'Repulsor', theme: 'magnetar', fares: ['A>C', 'C>B', 'B>A'],
+  map: ['', '', '.......CCCC', '', '', '', '', '', '', '', '', '', '....S', '...AAAA.....................BBBB', '', ''],
+  hazards: [{ t: 'magnet', c: [16, 9], r: 6, mode: 'push', str: 300 }] },
+
+// 6: METEOR SHOWER — falling rocks from above
+{ name: 'Meteor Shower', theme: 'asteroid', fares: ['A>B', 'B>C', 'C>A'],
+  map: ['', '', '', '', '', '', '', '', '', '', '', '', '....S', '...AAAA........BBBB........CCCC', '', ''],
+  hazards: [{ t: 'meteors', x0: 4, x1: 30, iv: 1.4, ang: 0.4 }] },
+
+// 7: CRUMBLE — platforms collapse after landing
+{ name: 'Crumble', theme: 'asteroid', fares: ['A>B', 'B>C', 'C>A'],
+  padMods: { B: { collapse: 2.5 }, C: { collapse: 2.5 } },
+  map: ['', '', '', '.........BBBB', '', '', '', '', '.....................CCCC', '', '', '', '....S', '...AAAA', '', ''],
+  hazards: [] },
+
+// 8: BLACK ICE — landings slide
+{ name: 'Black Ice', theme: 'frozen', fares: ['A>B', 'B>C', 'C>A'],
+  padMods: { B: { ice: true }, C: { ice: true } },
+  map: ['', '', '', '.........BBBBBB', '', '', '', '', '', '..............CCCCCC', '', '', '....S', '...AAAA', '', ''],
+  hazards: [] },
+
+// 9: CONVEYOR — the pad drags you sideways
+{ name: 'Conveyor', theme: 'reactor', fares: ['A>B', 'B>C', 'C>A'],
+  padMods: { B: { conveyor: 70 }, C: { conveyor: -70 } },
+  map: ['', '', '', '........BBBBBB', '', '', '', '', '', '.............CCCCCC', '', '', '....S', '...AAAA', '', ''],
+  hazards: [] },
+
+// 10: TRACTOR TROUBLE — a beam hauls you toward it
+{ name: 'Tractor Trouble', theme: 'reactor', fares: ['A>B', 'B>C', 'C>A'],
+  map: ['', '', '......BBBB..................CCCC', '', '', '', '', '', '', '', '', '', '...............S', '..............AAAA', '', ''],
+  hazards: [{ t: 'tractor', c: [15, 6], r: 8, str: 300 }] },
+
+// 11: DEBRIS FIELD — weave the narrow gaps
+{ name: 'Debris Field', theme: 'asteroid', fares: ['A>B', 'B>C', 'C>A'],
+  map: ['', '', '.................BBBB', '', '....######....######....######', '', '', '.......######....######', '', '', '....######....######....######', '', '....S', '...AAAA...................CCCC', '', ''],
+  hazards: [] },
+
+// 12: MINEFIELD — proximity mines with a fuse
+{ name: 'Minefield', theme: 'magnetar', fares: ['A>B', 'B>C', 'C>A'],
+  map: ['', '', '.................BBBB', '', '', '', '', '', '', '', '', '', '....S', '...AAAA...................CCCC', '', ''],
+  hazards: [{ t: 'mine', c: [11, 8] }, { t: 'mine', c: [17, 6] }, { t: 'mine', c: [23, 9] }] },
+
+// 13: THE BEAST — an alien roams the level
+{ name: 'The Beast', theme: 'hive', fares: ['A>B', 'B>C', 'C>A'],
+  map: ['', '', '.......BBBB................CCCC', '', '', '', '', '', '', '', '', '', '..............S', '.............AAAA', '', ''],
+  hazards: [{ t: 'creature', p: [4, 6], w: 4, h: 3, axis: 'x', range: 20, sp: 0.5, hue: 130 }] },
+
+// 14: WARP LANES — gates jump you across the map
+{ name: 'Warp Lanes', theme: 'wormhole', fares: ['A>B', 'B>C', 'C>A'],
+  map: ['', '', '....CCCC', '', '', '..........########............', '', '', '', '..........########............', '', '', '....S', '...AAAA......................BBBB', '', ''],
+  hazards: [{ t: 'teleport', a: [7, 8], b: [30, 4] }] },
+
+// 15: RUNNING ON EMPTY — thin fuel, grab the tanks
+{ name: 'Running on Empty', theme: 'deepspace', fuel: 45, fares: ['A>B', 'B>C', 'C>A'],
+  map: ['', '', '.................BBBB', '', '..........*', '', '', '..................*', '', '.............*', '', '', '....S', '...AAAA...................CCCC', '', ''],
+  hazards: [] },
+
+// 16: BLACKOUT — only your lights show the way
+{ name: 'Blackout', theme: 'deepspace', dark: true, fares: ['A>B', 'B>C', 'C>A'],
+  map: ['', '', '.................BBBB', '', '', '.........########', '', '', '', '.................########', '', '', '....S', '...AAAA...................CCCC', '', ''],
+  hazards: [] },
+
+// 17: SANDSTORM — poor visibility, shifting wind
+{ name: 'Sandstorm', theme: 'desert', sandstorm: true, fares: ['A>B', 'B>C', 'C>A'],
+  map: ['', '', '.................BBBB', '', '', '', '', '', '', '', '', '', '....S', '...AAAA...................CCCC', '', ''],
+  hazards: [] },
+
+// 18: EVENT HORIZON — a black hole warps everything near it
+{ name: 'Event Horizon', theme: 'singularity', fares: ['A>B', 'B>C', 'C>A'],
+  map: ['', '', '......BBBB.................CCCC', '', '', '', '', '', '', '', '', '', '...............S', '..............AAAA', '', ''],
+  hazards: [{ t: 'blackhole', c: [15, 7], r: 9 }] },
+
+// 19: WINDMILL DOCKS — moving pads in a crosswind
+{ name: 'Windmill Docks', theme: 'reactor', fares: ['A>B', 'B>C', 'C>A'],
+  padMods: { B: { move: { axis: 'y', range: 5, sp: 0.8 } } },
+  map: ['', '', '.................BBBB', '', '', '', '', '', '', '', '', '', '....S', '...AAAA...................CCCC', '', ''],
+  hazards: [{ t: 'wind', p: [10, 3], w: 10, h: 9, fx: -120, fy: 0, gust: 1 }] },
+
+// 20: MAGNETIC STORM — magnets and meteors
+{ name: 'Magnetic Storm', theme: 'magnetar', fares: ['A>B', 'B>C', 'C>A'],
+  map: ['', '', '.......BBBB...............CCCC', '', '', '', '', '', '', '', '', '', '....S', '...AAAA', '', ''],
+  hazards: [{ t: 'magnet', c: [12, 6], r: 6, mode: 'pull', str: 240 },
+            { t: 'magnet', c: [22, 8], r: 6, mode: 'push', str: 260 },
+            { t: 'meteors', x0: 4, x1: 28, iv: 1.8, ang: 0 }] },
+
+// 21: FROSTBITE — ice pads that collapse
+{ name: 'Frostbite', theme: 'frozen', fares: ['A>B', 'B>C', 'C>A'],
+  padMods: { B: { ice: true, collapse: 3 }, C: { ice: true } },
+  map: ['', '', '', '.........BBBBBB', '', '', '', '', '', '..............CCCCCC', '', '', '....S', '...AAAA', '', ''],
+  hazards: [{ t: 'meteors', x0: 6, x1: 24, iv: 2.2, ang: 0.3 }] },
+
+// 22: CONVEYOR CHAOS — sliding pads plus wind
+{ name: 'Conveyor Chaos', theme: 'reactor', fares: ['A>B', 'B>C', 'C>A'],
+  padMods: { B: { conveyor: 80 }, C: { conveyor: -80 } },
+  map: ['', '', '', '........BBBBBB', '', '', '', '', '', '............CCCCCC', '', '', '....S', '...AAAA', '', ''],
+  hazards: [{ t: 'wind', p: [4, 5], w: 22, h: 4, fx: 0, fy: 90, gust: 1.4 }] },
+
+// 23: TRACTOR MAZE — beams inside a tight maze
+{ name: 'Tractor Maze', theme: 'wormhole', fares: ['A>B', 'B>C', 'C>A'],
+  map: ['', '', '.................BBBB', '', '.......########........#######', '', '', '.......#######........########', '', '', '', '', '....S', '...AAAA...................CCCC', '', ''],
+  hazards: [{ t: 'tractor', c: [18, 6], r: 7, str: 300 }] },
+
+// 24: ALIEN NEST — creatures guard the mines
+{ name: 'Alien Nest', theme: 'hive', fares: ['A>B', 'B>C', 'C>A'],
+  map: ['', '', '.......BBBB................CCCC', '', '', '', '', '', '', '', '', '', '..............S', '.............AAAA', '', ''],
+  hazards: [{ t: 'creature', p: [5, 5], w: 4, h: 3, axis: 'x', range: 16, sp: 0.5, hue: 90 },
+            { t: 'mine', c: [15, 9] }, { t: 'mine', c: [22, 7] }] },
+
+// 25: WARP STORM — teleports lost in a sandstorm
+{ name: 'Warp Storm', theme: 'desert', sandstorm: true, fares: ['A>B', 'B>C', 'C>A'],
+  map: ['', '', '....CCCC', '', '', '', '', '', '', '', '', '', '....S', '...AAAA......................BBBB', '', ''],
+  hazards: [{ t: 'teleport', a: [8, 8], b: [28, 4] }] },
+
+// 26: DARK MATTER — a black hole in the dark
+{ name: 'Dark Matter', theme: 'singularity', dark: true, fares: ['A>B', 'B>C', 'C>A'],
+  map: ['', '', '......BBBB.................CCCC', '', '', '', '', '', '', '', '', '', '...............S', '..............AAAA', '', ''],
+  hazards: [{ t: 'blackhole', c: [15, 7], r: 8 }] },
+
+// 27: METEOR GAUNTLET — meteors, wind and a moving pad
+{ name: 'Meteor Gauntlet', theme: 'asteroid', fares: ['A>B', 'B>C', 'C>A'],
+  padMods: { B: { move: { axis: 'x', range: 6, sp: 0.6, accel: 1 } } },
+  map: ['', '', '.............BBBB', '', '', '', '', '', '', '', '', '', '....S', '...AAAA...................CCCC', '', ''],
+  hazards: [{ t: 'meteors', x0: 4, x1: 30, iv: 1.1, ang: 0.5 },
+            { t: 'wind', p: [4, 6], w: 26, h: 4, fx: 100, fy: 0, gust: 1.6 }] },
+
+// 28: THE CRUCIBLE — mines, a beast and a tractor beam
+{ name: 'The Crucible', theme: 'hive', fares: ['A>B', 'B>C', 'C>A'],
+  map: ['', '', '.......BBBB................CCCC', '', '', '', '', '', '', '', '', '', '..............S', '.............AAAA', '', ''],
+  hazards: [{ t: 'creature', p: [4, 5], w: 4, h: 3, axis: 'd', range: 12, sp: 0.5, hue: 110 },
+            { t: 'tractor', c: [24, 8], r: 6, str: 320 },
+            { t: 'mine', c: [16, 6] }] },
+
+// 29: SINGULARITY — black hole, magnets, collapsing pads
+{ name: 'Singularity', theme: 'singularity', fares: ['A>B', 'B>C', 'C>A'],
+  padMods: { B: { collapse: 3 }, C: { collapse: 3 } },
+  map: ['', '', '.........BBBB', '', '', '', '', '', '', '.....................CCCC', '', '', '....S', '...AAAA', '', ''],
+  hazards: [{ t: 'blackhole', c: [16, 7], r: 8 },
+            { t: 'magnet', c: [7, 9], r: 5, mode: 'push', str: 240 }] },
+
+// 30: POINT OF NO RETURN — the whole armory, thin fuel
+{ name: 'Point of No Return', theme: 'nebula', fuel: 70, fares: ['A>B', 'B>C', 'C>D', 'D>A'],
+  padMods: { B: { move: { axis: 'y', range: 5, sp: 0.7 } }, C: { ice: true }, D: { collapse: 3 } },
+  map: ['', '', '....BBBB..................DDDD', '', '', '.............*', '', '', '', '.....................*', '', '', '....S', '...AAAA.......................CCCC', '', ''],
+  hazards: [{ t: 'blackhole', c: [16, 8], r: 7 },
+            { t: 'meteors', x0: 6, x1: 30, iv: 1.6, ang: 0.3 },
+            { t: 'wind', p: [22, 3], w: 8, h: 8, fx: -120, fy: 0, gust: 1.2 },
+            { t: 'mine', c: [11, 10] }] },
+
+];
+
+const CAMPAIGNS = [
+  { id: 'cosmo', name: 'COSMO CAB', levels: LEVELS },
+  { id: 'outer', name: 'OUTER RIM', levels: OUTER_LEVELS },
+];
+
+if (typeof module !== 'undefined') module.exports = { LEVELS, OUTER_LEVELS, THEMES, CAMPAIGNS };

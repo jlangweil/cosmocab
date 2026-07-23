@@ -2365,17 +2365,22 @@ function drawGame(c, time) {
   if (G.passenger) G.passenger.draw(c, time);
   G.ship.draw(c, time);
 
-  // destination bubble above taxi
-  if (G.passenger && G.passenger.state === 'riding' && !G.ship.dead) {
+  // destination bubble above taxi. Once the exit gate is open (final fare) the
+  // destination is a border direction, not a pad — mirror the HUD wording.
+  if (!G.ship.dead && (G.exitGate || (G.passenger && G.passenger.state === 'riding'))) {
+    const label = G.exitGate
+      ? ({ up: 'EXIT ↑ UP', down: 'EXIT ↓ DOWN', left: 'EXIT ← LEFT', right: 'EXIT → RIGHT' }[G.exitGate.edge])
+      : '→ PAD ' + G.passenger.dest;
     const bx = G.ship.x, by = G.ship.y - 44;
-    c.fillStyle = 'rgba(12, 18, 30, 0.85)';
-    roundRect(c, bx - 42, by - 14, 84, 24, 12); c.fill();
-    c.strokeStyle = '#7cff9a'; c.lineWidth = 1.5;
-    roundRect(c, bx - 42, by - 14, 84, 24, 12); c.stroke();
-    c.fillStyle = '#7cff9a';
     c.font = 'bold 13px "Segoe UI", sans-serif';
+    const halfW = Math.max(42, c.measureText(label).width / 2 + 12);
     c.textAlign = 'center'; c.textBaseline = 'middle';
-    c.fillText('→ PAD ' + G.passenger.dest, bx, by - 1);
+    c.fillStyle = 'rgba(12, 18, 30, 0.85)';
+    roundRect(c, bx - halfW, by - 14, halfW * 2, 24, 12); c.fill();
+    c.strokeStyle = '#7cff9a'; c.lineWidth = 1.5;
+    roundRect(c, bx - halfW, by - 14, halfW * 2, 24, 12); c.stroke();
+    c.fillStyle = '#7cff9a';
+    c.fillText(label, bx, by - 1);
   }
 
   drawParticles(c);

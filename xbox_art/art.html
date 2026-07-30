@@ -10,9 +10,11 @@
 <script>
 // Renders Xbox store art at the current window size.
 //   ?title=1   include the game logo (placed within the top 3/4)
+//   ?promo=1   add the "30 NEW LEVELS" new-world promo banner
 // The composition adapts to landscape / portrait / square automatically.
 const W = innerWidth, H = innerHeight;
 const TITLED = location.search.includes('title=1');
+const PROMO = location.search.includes('promo=1');
 const cv = document.getElementById('c');
 cv.width = W; cv.height = H;
 const c = cv.getContext('2d');
@@ -307,6 +309,62 @@ if (TITLED) {
   c.shadowColor = '#05060e'; c.shadowBlur = 8;
   c.fillText('P I C K  U P   ·   D E L I V E R   ·   S U R V I V E', W / 2, ty + size * 0.75);
   c.shadowBlur = 0;
+}
+
+/* ------------------------------- promo banner ------------------------------ */
+// A glowing "30 NEW LEVELS" flash advertising the Outer Rim world, in the same
+// visual language as the in-game main-menu banner (gold starburst + purple pill).
+if (PROMO) {
+  const bw = portrait ? W * 0.82 : square ? W * 0.62 : W * 0.42;
+  const bh = bw * (portrait ? 0.2 : square ? 0.24 : 0.24);
+  // Portrait sits the pill under the subtitle. Landscape (hero) parks it on the
+  // middle-right — open sky clear of the centered title, cab, and skyline pad.
+  // Square drops into the bottom-left band over the skyline.
+  let cx, cy;
+  if (portrait) { cx = W / 2; cy = H * 0.30; }
+  else if (square) { cx = W * 0.035 + bw / 2; cy = H * 0.87; }
+  else { cx = W * 0.965 - bw / 2; cy = H * 0.5; }
+  const x = cx - bw / 2, y = cy - bh / 2;
+
+  c.save();
+  // glowing pill
+  c.shadowColor = 'rgba(210,110,255,0.95)'; c.shadowBlur = bh * 0.5;
+  const pg = c.createLinearGradient(x, 0, x + bw, 0);
+  pg.addColorStop(0, 'rgba(86,34,132,0.96)');
+  pg.addColorStop(1, 'rgba(168,44,120,0.96)');
+  c.fillStyle = pg;
+  roundRect(x, y, bw, bh, bh * 0.26); c.fill();
+  c.shadowBlur = 0;
+  c.lineWidth = Math.max(2, bh * 0.045);
+  c.strokeStyle = 'rgba(255,205,255,0.85)';
+  roundRect(x, y, bw, bh, bh * 0.26); c.stroke();
+
+  // gold starburst "NEW" badge on the left
+  const bx = x + bh * 0.62, by = cy, br = bh * 0.42;
+  c.fillStyle = '#ffcf3f'; c.shadowColor = '#ffcf3f'; c.shadowBlur = br * 0.6;
+  c.beginPath();
+  for (let i = 0; i < 24; i++) {
+    const a = i * TAU / 24, rr = i % 2 ? br * 0.6 : br;
+    c[i ? 'lineTo' : 'moveTo'](bx + Math.cos(a) * rr, by + Math.sin(a) * rr);
+  }
+  c.closePath(); c.fill(); c.shadowBlur = 0;
+  c.fillStyle = '#3a1030';
+  c.font = `bold ${br * 0.62}px "Segoe UI", sans-serif`;
+  c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.fillText('NEW', bx, by + br * 0.04);
+
+  // headline + kicker
+  const tx = x + bh * 1.2;
+  c.textAlign = 'left';
+  c.fillStyle = '#9fb0ff';
+  c.font = `700 ${bh * 0.17}px "Segoe UI", sans-serif`;
+  c.fillText('OUTER RIM WORLD', tx, cy - bh * 0.2);
+  c.fillStyle = '#ffffff';
+  c.shadowColor = 'rgba(255,150,225,0.9)'; c.shadowBlur = bh * 0.14;
+  c.font = `bold ${bh * 0.34}px "Segoe UI", sans-serif`;
+  c.fillText('30 NEW LEVELS', tx, cy + bh * 0.19);
+  c.shadowBlur = 0;
+  c.restore();
 }
 
 // gentle vignette

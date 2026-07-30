@@ -86,9 +86,10 @@ function setDifficulty(name) {
 }
 
 /* =============================== input =============================== */
-const ACTIONS = ['thrust', 'left', 'right', 'horn'];
+const ACTIONS = ['thrust', 'down', 'left', 'right', 'horn'];
 const DEFAULT_KEYS = {
   thrust: ['KeyW', 'ArrowUp'],
+  down: ['KeyS', 'ArrowDown'],
   left: ['KeyA', 'ArrowLeft'],
   right: ['KeyD', 'ArrowRight'],
   horn: ['Space'],
@@ -239,6 +240,7 @@ function pollGamepad() {
 
 const input = {
   get thrust() { return bindingsFor('thrust').some(k => keysDown.has(k)) || pad.thrust; },
+  get down() { return bindingsFor('down').some(k => keysDown.has(k)) || !!pad.buttons.down; },
   get left() { return bindingsFor('left').some(k => keysDown.has(k)) || pad.left; },
   get right() { return bindingsFor('right').some(k => keysDown.has(k)) || pad.right; },
 };
@@ -378,7 +380,7 @@ function parseLevel(def) {
       if (!m) continue;
       if (m.ice) pad.ice = true;
       if (m.conveyor) pad.conveyor = m.conveyor; // signed px/s drift
-      if (m.collapse) pad.collapse = m.collapse; // seconds after landing
+      if (m.collapse) { pad.collapse = m.collapse; pad.respawn = m.respawn || 3.5; } // secs to crumble after landing / secs to reform
       if (m.move) {
         pad.baseX = pad.x; pad.baseY = pad.y;
         pad.move = { axis: m.move.axis || 'x', range: (m.move.range || 4) * CELL,
@@ -395,6 +397,7 @@ function parseLevel(def) {
   return {
     name: def.name, dark: !!def.dark, sandstorm: !!def.sandstorm,
     startFuel: def.fuel || 100,
+    startOn: def.startOn || null, // pad label to begin parked on (else in-air at spawn)
     W: W * CELL, H: H * CELL,
     walls, pads, fuels, hazards, spawn, fares,
   };
@@ -895,7 +898,7 @@ const CALLOUTS = [
   "DON'T MAKE ME SPACEWALK!",
   "I'M STANDING ON AN ASTEROID HERE!",
   "I'M FREEZING OVER HERE!",
-  "HEY! DOWN HERE, FLYBOY!",
+  "HEY! DOWN HERE!",
   "MY METER'S RUNNING, PAL!",
   "ANY CENTURY NOW, BUDDY!",
   "LOOK ALIVE UP THERE!",
@@ -906,8 +909,12 @@ const CALLOUTS = [
   "THIS ROCK ISN'T COMFY!",
   "HELLO? PAYING CUSTOMER!",
 ];
-// Short reliefs a fare blurts when the cab finally sets down for them.
-const BOARD_CALLS = ["FINALLY!", "ABOUT TIME!", "THERE HE IS!", "YES! OVER HERE!", "NOW WE'RE TALKING!", "MY HERO!"];
+// Short reliefs / greetings a fare blurts when the cab finally sets down for them.
+const BOARD_CALLS = [
+  "FINALLY!", "ABOUT TIME!", "THERE YOU ARE!", "YES! OVER HERE!", "NOW WE'RE TALKING!",
+  "MY HERO!", "YO! THANKS!", "HEY, THANKS!", "GOOD TO SEE YA!", "PERFECT TIMING!",
+  "OH THANK GOODNESS!", "RIGHT ON TIME!", "SWEET, A RIDE!",
+];
 const pickLine = arr => arr[(Math.random() * arr.length) | 0];
 
 // Voice personalities: each fare picks one so their lines stay consistent, and
@@ -945,6 +952,8 @@ class Passenger {
     const ship = game.ship;
     this.walkT += dt;
     if (this.state === 'waiting') {
+      // pad crumbled out from under them — wait quietly until it reforms
+      if (this.pad.gone) return;
       this.shout -= dt;
       if (this.shout < 0) {
         this.shout = 5 + Math.random() * 6;
@@ -980,6 +989,7 @@ class Passenger {
   }
   draw(c, time) {
     if (this.state === 'riding' || this.state === 'gone') return;
+    if (this.state === 'waiting' && this.pad.gone) return; // hidden while their pad is reforming
     const walking = this.state === 'walking' || this.state === 'exiting';
     const bob = walking ? Math.abs(Math.sin(this.walkT * 10)) * 3 : 0;
     const x = this.x, y = this.y - bob;
@@ -1018,6 +1028,7 @@ class Ship {
     this.landedPad = null;
     this.dead = false;
     this.thrustLevel = 0;
+    this.downLevel = 0;       // top (retro) thruster glow
     this.airTime = 0;         // seconds since last takeoff
     this.tookOffFrom = null;  // pad we last lifted off from
   }
@@ -1029,6 +1040,9 @@ class Ship {
   update(dt, game) {
     if (this.dead) return;
     const thrusting = input.thrust && this.fuel > 0;
+    // top-mounted retro thruster: pushes the cab the opposite way to the main
+    // engine (straight down when level), for quick descents and countering lift.
+    const downing = input.down && !thrusting && !this.landed && this.fuel > 0;
     const rotating = (input.left || input.right) && this.fuel > 0;
 
     if (rotating) {
@@ -1042,6 +1056,27 @@ class Ship {
       }
     }
     this.thrustLevel = lerp(this.thrustLevel, thrusting ? 1 : 0, clamp(dt * 12, 0, 1));
+    this.downLevel = lerp(this.downLevel, downing ? 1 : 0, clamp(dt * 12, 0, 1));
+
+    if (downing) {
+      const dt2 = DIFF.thrust * 0.7; // a touch weaker than the main engine
+      this.vx += Math.sin(this.angle) * -dt2 * dt;
+      this.vy += Math.cos(this.angle) * dt2 * dt;
+      this.fuel -= DIFF.burn * 0.6 * dt;
+      // exhaust jets up out of the top of the cab
+      for (let i = 0; i < 2; i++) {
+        spawnParticle({
+          x: this.x + Math.sin(this.angle) * 14 + (Math.random() - 0.5) * 5,
+          y: this.y - Math.cos(this.angle) * 14,
+          vx: Math.sin(this.angle) * (90 + Math.random() * 60) + this.vx * 0.5 + (Math.random() - 0.5) * 40,
+          vy: -Math.cos(this.angle) * (90 + Math.random() * 60) + this.vy * 0.5 + (Math.random() - 0.5) * 40,
+          life: 0.18 + Math.random() * 0.14, maxLife: 0.32,
+          size: 2 + Math.random() * 2.5,
+          color: ['#bfe0ff', '#9cc4ff', '#6f9dff'][i % 3],
+          glow: true, shrink: true, drag: 2,
+        });
+      }
+    }
 
     if (thrusting) {
       const ax = Math.sin(this.angle) * DIFF.thrust;
@@ -1080,7 +1115,7 @@ class Ship {
       });
     }
     this.fuel = Math.max(0, this.fuel);
-    AudioSys.setEngine(thrusting ? this.thrustLevel : 0, rotating && !this.landed);
+    AudioSys.setEngine(Math.max(thrusting ? this.thrustLevel : 0, downing ? this.downLevel : 0), rotating && !this.landed);
 
     if (!this.landed) {
       this.airTime += dt;
@@ -1172,6 +1207,27 @@ class Ship {
     // main engine nozzle
     c.fillStyle = '#4a5163';
     roundRect(c, -7, 12, 14, 5, 2); c.fill();
+
+    // top retro thruster: twin nozzles on the roof and a blue jet firing upward
+    c.fillStyle = '#3c4353';
+    roundRect(c, -12, -22, 7, 4, 2); c.fill();
+    roundRect(c, 5, -22, 7, 4, 2); c.fill();
+    if (this.downLevel > 0.05) {
+      const g = c.createRadialGradient(0, -22, 2, 0, -22, 26);
+      g.addColorStop(0, `rgba(150,190,255,${0.6 * this.downLevel})`);
+      g.addColorStop(1, 'rgba(90,140,255,0)');
+      c.fillStyle = g;
+      c.beginPath(); c.arc(0, -22, 26, 0, TAU); c.fill();
+      const fl = 7 + this.downLevel * (9 + Math.sin(time * 60) * 3);
+      const fg = c.createLinearGradient(0, -20, 0, -20 - fl);
+      fg.addColorStop(0, '#eaf4ff'); fg.addColorStop(0.5, '#7fb0ff'); fg.addColorStop(1, 'rgba(70,120,255,0)');
+      c.fillStyle = fg;
+      for (const nx of [-8.5, 8.5]) {
+        c.beginPath();
+        c.moveTo(nx - 3.5, -20); c.quadraticCurveTo(nx, -20 - fl * 1.6, nx + 3.5, -20); c.closePath();
+        c.fill();
+      }
+    }
     c.restore();
   }
 }
@@ -1249,6 +1305,18 @@ const G = {
     this.level = parseLevel(campaignLevels(this.campaign)[idx]);
     this.ship = new Ship(this.level.spawn.x, this.level.spawn.y);
     this.ship.fuel = this.level.startFuel; // fuel-challenge levels start low
+    // some boards begin with the cab already parked on a pad (its first fare's
+    // pickup), so you're not fighting a hazard the instant the level starts
+    if (this.level.startOn) {
+      const p = this.level.pads.find(pad => pad.label === this.level.startOn);
+      if (p) {
+        this.ship.x = p.x + p.w / 2;
+        this.ship.y = p.y - 19; // matches the landed rest offset
+        this.ship.vx = this.ship.vy = 0;
+        this.ship.landed = true;
+        this.ship.landedPad = p;
+      }
+    }
     this.hazardObjs = this.level.hazards.map(buildHazard).filter(Boolean);
     this.fareIndex = 0;
     this.levelScore = 0;
@@ -1316,7 +1384,13 @@ const G = {
       this.openExit();
     } else {
       this.showMsg(`TAKE ME TO PAD ${pass.dest}!`, 2.5);
-      AudioSys.say('Pad ' + pass.dest + ', and step on it!', pass.voice);
+      AudioSys.say(pickLine([
+        'Pad ' + pass.dest + ', and step on it!',
+        'Take me to pad ' + pass.dest + '!',
+        'Pad ' + pass.dest + ', please!',
+        'Head for pad ' + pass.dest + '!',
+        'Pad ' + pass.dest + ', let\'s go!',
+      ]), pass.voice);
     }
   },
 
@@ -1343,7 +1417,11 @@ const G = {
       return;
     }
     this.showMsg(fast ? 'DELIVERED! FAST BONUS!' : 'DELIVERED!', 2);
-    AudioSys.say(pickLine(["Thanks a million, pal!", "You're a lifesaver!", "Keep the change, captain!", "Now that's a ride!", "You did good, flyboy!"]), pass.voice);
+    AudioSys.say(pickLine([
+      "Thanks a million, pal!", "You're a lifesaver!", "Keep the change!",
+      "Now that's a ride!", "Yo, appreciate it!", "Thanks, you're the best!",
+      "Smooth ride, thanks!", "Catch you later!", "Nice flying!", "Much obliged!",
+    ]), pass.voice);
     const dropPad = this.ship.landedPad;
     pass.state = 'exiting';
     // step off toward the roomier side, but stay ON the pad (don't walk off
@@ -1496,7 +1574,15 @@ const G = {
   updatePads(dt) {
     const ship = this.ship, pass = this.passenger;
     for (const pad of this.level.pads) {
-      if (pad.gone) continue;
+      if (pad.gone) {
+        // a crumbled pad reforms after its respawn delay so fares that pick up
+        // or drop off here again stay reachable (and no fare is left stranded)
+        if (pad.regenT !== undefined) {
+          pad.regenT -= dt;
+          if (pad.regenT <= 0) { pad.gone = false; pad.collapseT = undefined; pad.regenT = undefined; }
+        }
+        continue;
+      }
       if (pad.move) {
         const mv = pad.move;
         // accel: speed ramps up over time; stop: dwell at the ends (clip the wave)
@@ -1517,6 +1603,7 @@ const G = {
         pad.collapseT -= dt;
         if (pad.collapseT <= 0) {
           pad.gone = true;
+          pad.regenT = pad.respawn; // schedule it to reform
           if (ship.landedPad === pad) { ship.landed = false; ship.landedPad = null; }
         }
       }
@@ -2373,7 +2460,7 @@ function drawGame(c, time) {
       : '→ PAD ' + G.passenger.dest;
     const bx = G.ship.x, by = G.ship.y - 44;
     c.font = 'bold 13px "Segoe UI", sans-serif';
-    const halfW = Math.max(42, c.measureText(label).width / 2 + 12);
+    const halfW = Math.max(42, label.length * 4 + 14); // width ~ char count (bold 13px)
     c.textAlign = 'center'; c.textBaseline = 'middle';
     c.fillStyle = 'rgba(12, 18, 30, 0.85)';
     roundRect(c, bx - halfW, by - 14, halfW * 2, 24, 12); c.fill();
